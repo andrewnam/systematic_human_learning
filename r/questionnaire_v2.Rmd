@@ -1,0 +1,200 @@
+---
+title: "questionnaire_pt2"
+author: "Andrew Nam"
+date: "3/7/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# these options here change the formatting of how comments are rendered
+knitr::opts_chunk$set(collapse = TRUE,
+                      comment = "#>",
+                      results = "hold",
+                      fig.show = "hold")
+
+# Disable this warning
+options(dplyr.summarise.inform = FALSE)
+
+# Clear any existing variables
+rm(list = ls())
+
+library(janitor)
+library(tidyverse)
+
+theme_set(theme_light() +
+            theme(plot.title = element_text(hjust = 0.5)))
+```
+
+# Load data
+
+```{r cars}
+df_subjects = read_tsv("../data/processed/subjects.tsv")
+df_trials = read_tsv("../data/processed/trials.tsv")
+df_qratings = read_tsv("../data/processed/qratings.tsv") %>% 
+  mutate(basis = factor(basis, c('Valid', 'Unclear', 'Invalid', 'Missing')))
+```
+
+# V1 Rater Agreement
+
+## Agreement on basis of valid solvers
+```{r}
+df_qratings %>% 
+  filter(solver, correct_actual) %>% 
+  group_by(subject_id) %>% 
+  mutate(both_valid = all(valid_basis)) %>% 
+  ungroup() %>% 
+  filter(both_valid) %>% 
+  select(subject_id, rater, sub_basis) %>% 
+  pivot_wider(names_from = rater, values_from = sub_basis) %>% 
+  mutate(agree = rater1 == rater2) %>% 
+  summarize(agreement = mean(agree))
+```
+
+## Agreement on validity of persistent solvers
+
+```{r}
+df_qratings %>% 
+  filter(correct_actual, solver) %>% 
+  group_by(subject_id) %>% 
+  summarize(num_valid = sum(valid_basis)) %>% 
+  group_by(num_valid) %>% 
+  summarize(n = n()) %>% 
+  mutate(f = n / sum(n))
+```
+
+
+
+# Prepare data
+
+```{r}
+min_accuracy = .8
+num_pd_guessers = 10
+num_unrated = 10
+set.seed(1)
+
+df_v2_responses = df_trials %>% 
+  filter(phase == 2,
+         trial >= 17) %>% 
+  group_by(subject_id) %>% 
+  summarize(accuracy = mean(correct)) %>% 
+  filter(accuracy >= min_accuracy) %>% 
+  select(subject_id) %>% 
+  left_join(df_subjects) %>% 
+  filter(!solver,
+         q_puzzle == 'target') %>% 
+  select(subject_id) %>% 
+  mutate(group = 'late_solver')
+
+df_v2_responses = df_qratings %>% 
+  filter(!solver,
+         qid > 20,
+         correct_actual) %>%
+  select(subject_id) %>% 
+  distinct() %>% 
+  sample_n(num_pd_guessers) %>% 
+  mutate(group = 'pd_guesser') %>% 
+  rbind(df_v2_responses) 
+
+df_v2_responses = df_subjects %>% 
+  filter(!excluded,
+         q_puzzle == 'target',
+         !(subject_id %in% c(df_qratings$subject_id, df_v2_responses$subject_id))) %>%
+  sample_n(num_unrated) %>%
+  select(subject_id) %>% 
+  mutate(group = 'unrated') %>% 
+  rbind(df_v2_responses)
+
+df_v2_responses = df_v2_responses %>% 
+  left_join(df_subjects) %>% 
+  select(sid_hash, group) %>% 
+  mutate(qid2 = sample.int(nrow(.))) %>%
+  select(qid2, sid_hash, group) %>% 
+  arrange(qid2)
+  
+df_v2_responses %>% 
+  write_tsv("../data/qratings/v2_groups.tsv")
+
+df_v2_responses = df_v2_responses %>% 
+  select(qid2, sid_hash) %>% 
+  left_join(df_subjects) %>% 
+  select(qid2, sid_hash, response = q_puzzle_digit, q_strategy) 
+
+df_v2_responses %>% 
+  write_tsv("../data/qratings/v2_responses.tsv")
+```
+
+# Analyses
+
+```{r}
+df_v2_groups = read_tsv("../data/qratings/v2_groups.tsv")
+df_qratings2 = read_tsv("../data/qratings/v2_ratings.tsv") %>% 
+  clean_names() %>% 
+  select(-response) %>% 
+  pivot_longer(-c(subject_id, sid_hash), names_to = c('.value', 'rater'), names_sep = '_') %>%
+  mutate(sub_basis = str_sub(basis, 1, 1),
+         rater = factor(rater),
+         pd = factor(pd),
+         basis = case_when(sub_basis %in% c('A', 'B', 'C') ~ 'Valid',
+                           sub_basis %in% c('D', 'H') ~ 'Unclear',
+                           sub_basis %in% c('I') ~ 'Missing',
+                           sub_basis %in% c('J') ~ 'Other',
+                           T ~ 'Invalid') %>% 
+           factor(c('Valid', 'Unclear', 'Invalid', 'Missing', 'Other')),
+         sub_basis = str_c(str_sub(basis, 1, 1), '.', sub_basis) %>% 
+           factor(c('V.A', 'V.B', 'V.C', 'U.D', 'U.H', 'I.E', 'I.F', 'I.G', 'M.I', 'O.J'))) %>% 
+  left_join(df_v2_groups)
+```
+## Agreement
+
+```{r}
+df_qratings2 %>% 
+  filter(group == 'late_solver') %>% 
+  select(subject_id, rater, sub_basis) %>% 
+  pivot_wider(names_from = rater, values_from = sub_basis) %>% 
+  group_by(an, jm) %>% 
+  count() %>% 
+  ungroup() %>% 
+  ggplot(aes(x = an, y = jm, fill = n)) +
+  geom_tile() +
+  scale_fill_gradient(low = 'white',
+                      high = 'steelblue',
+                      na.value = 'white') +
+  geom_text(aes(label = n)) +
+  coord_equal() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme(legend.position = "none") +
+  labs(x = 'Rater 1',
+       y = 'Rater 2')
+```
+
+## Proportion of valid strategies
+
+```{r}
+df_qratings2 %>% 
+  group_by(group, subject_id) %>% 
+  summarize(valid = all(basis == 'Valid')) %>% 
+  group_by(group, valid) %>%
+  summarize(n = n()) %>%
+  mutate(f = n / sum(n))
+```
+
+```{r}
+df_qratings %>% 
+  filter(solver) %>% 
+  group_by(basis) %>% 
+  summarize(n = n()) %>% 
+  mutate(f = n / sum(n))
+```
+
+# Late-solver profile
+
+```{r}
+df_v2_groups = read_tsv("../data/qratings/v2_groups.tsv")
+
+df_v2_groups %>% 
+  filter(group == 'late_solver') %>% 
+  left_join(df_subjects) %>% 
+  arrange(p1_last_acc)
+```
+

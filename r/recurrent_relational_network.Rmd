@@ -1,0 +1,256 @@
+---
+title: "Recurrent Relational Network"
+author: "Andrew"
+date: "12/17/2020"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_depth: 4
+    theme: cosmo
+    highlight: tango
+    pandoc_args: ["--number-offset=2"]
+---
+
+This file should be run after the 'Recurrent Relational Network.ipynb'.
+```{r setup, include=FALSE}
+# these options here change the formatting of how comments are rendered
+knitr::opts_chunk$set(collapse = TRUE,
+                      comment = "#>",
+                      results = "hold",
+                      fig.show = "hold")
+
+# Clear any existing variables
+rm(list = ls())
+```
+
+```{r libraries, message=FALSE}
+library(glue)
+library(zoo)
+library(scales)
+library(tidyverse)
+
+source("functions.R")
+```
+
+```{r}
+# Set ggplot theme
+theme_set(theme_light() +
+            theme(plot.title = element_text(hjust = 0.5)))
+```
+
+# Sudoku 
+
+## Load data
+
+```{r, message=F}
+df.sudoku = map_dfr(1:10,
+                    ~ read_tsv(glue("../data/rrn/rrn_sudoku/rrn_sudoku_{.x}.tsv")) %>% 
+                      mutate(run_id = .x)) %>% 
+  pivot_longer(cols = c(loss, accuracy, solved),
+               names_to = 'measure',
+               values_to = 'value') %>% 
+  mutate(measure = recode(measure,
+                          loss = "Loss",
+                          accuracy = "Cells Solved",
+                          solved = "Puzzles Solved"),
+         dataset = recode(dataset,
+                          train = 'Train',
+                          test = 'Valid'),
+         dataset = factor(dataset,
+                          levels = c('Train', 'Valid'))) %>% 
+  select(run_id, everything())
+
+df.sudoku %>% 
+  filter(epoch == 100,
+         dataset == 'Valid') %>% 
+  group_by(measure) %>% 
+  summarize(mean = mean(value))
+```
+
+## Plot results
+
+```{r}
+df.sudoku %>% 
+  filter(measure != 'Loss') %>% 
+  ggplot(aes(x = epoch, y = value)) +
+  stat_summary(aes(fill = measure),
+               fun.data = "mean_cl_boot",
+               geom = "ribbon",
+               alpha = .3) +
+  stat_summary(aes(color = measure),
+               fun = "mean",
+               geom = "line",
+               size = .75) +
+  facet_wrap(vars(dataset)) +
+  labs(title = 'RRN - Sudoku 9x9', x = 'Epoch', y = 'Accuracy') +
+  theme(legend.position = 'bottom',
+        text = element_text(size = 15)) +
+  guides(color = guide_legend(title="Measure"),
+         fill = guide_legend(title="Measure")) +
+  ggsave('../figures/rrn/rrn_sudoku.png', width = 6, height = 4)
+```
+
+# Hidden Single Puzzles
+
+```{r, message=F}
+df.hs.train = read_tsv("../data/rrn/rrn_hs_tr_results.tsv") %>% 
+  pivot_longer(cols=contains('acc_'),
+               names_to = c('method', 'dataset'),
+               names_pattern = "acc_(.*)_(.*)",
+               values_to = 'accuracy') 
+
+df.hs.test = read_tsv("../data/rrn/rrn_hs_te_results.tsv")
+df.hs.test = df.hs.train %>% 
+  filter(dataset == 'valid',
+         num_train == 500,
+         accuracy >= .99) %>% 
+  group_by(model_type, num_train, run_id) %>% 
+  filter(num_updates == min(num_updates)) %>% 
+  ungroup() %>% 
+  inner_join(df.hs.test)
+
+df.hs.test %>% 
+  write_tsv("../data/rrn/rrn_hs_te_results.tsv")
+
+df.hs.train = df.hs.train %>% 
+  mutate(run_id = factor(run_id),
+         model = model_type %>% str_to_upper(),
+         model = factor(model, levels = c('RRN', 'DRRN'))) %>% 
+  mutate(dataset = recode(dataset,
+                          train = 'Train',
+                          valid = 'Valid'),
+         dataset = factor(dataset, levels = c('Train', 'Valid')),
+         num_train = factor(num_train)) %>% 
+  select(-model_type) %>% 
+  mutate(presentations = batch_size * num_updates)
+
+df.hs.test = df.hs.test %>% 
+  mutate(run_id = factor(run_id),
+         model = model_type %>% str_to_upper(),
+         model = factor(model, levels = c('RRN', 'DRRN'))) %>% 
+  select(-c(model_type, num_train, batch_size, accuracy))
+```
+
+## Training plot
+
+```{r}
+df = df.hs.train %>%
+  group_by(run_id, model, num_train, dataset, method) %>% 
+  mutate(accuracy = cummax(accuracy)) %>% 
+  ungroup() %>% 
+  group_by(model, num_train, dataset, method, presentations) %>% 
+  filter(accuracy %in% c(min(accuracy), max(accuracy))) %>% 
+  ungroup() %>% 
+  distinct(model, num_train, dataset, method, presentations, accuracy) %>% 
+  arrange(num_train, presentations) %>% 
+  group_by(model, num_train, dataset, presentations, method) %>% 
+  mutate(run = ifelse(accuracy == max(accuracy), 'Best', 'Worst')) %>%
+  ungroup()
+
+# since finished runs drop out, the max drops to next best.
+# this drops 'best' after one run finishes
+df = df %>% 
+  filter(run == 'Best', accuracy >= .99) %>% 
+  group_by(model, num_train, dataset, run, method) %>% 
+  summarize(finish_point = min(presentations)) %>% 
+  full_join(df)  %>% 
+  arrange(model, num_train, dataset, method, presentations) %>% 
+  filter(is.na(finish_point) | presentations <= finish_point) %>% 
+  select(-finish_point)
+
+modeltype = 'DRRN'
+dataset_type = 'Valid'
+
+df %>% 
+  filter(model == modeltype,
+         dataset == dataset_type,
+         method == 'sample',
+         presentations %% 1000 == 0,
+         presentations <= 500000,
+         as.numeric(as.character(num_train)) >= 25) %>% 
+  ggplot(aes(x = presentations,
+             y = accuracy,
+             linetype = run)) +
+  stat_summary(aes(color = num_train),
+               fun = "mean",
+               geom = "line",
+               size = 1) +
+  scale_color_manual(values = c(`500` = 'black',
+                                `300` = '#C77CFF',
+                                `100` = '#00BFC4',
+                                `50` = '#D39200',
+                                `25` = '#F8766D')) +
+  coord_cartesian(xlim = c(0, 500000)) +
+  labs(x = 'Pattern Presentations',
+       y = 'Accuracy') +
+  guides(color = guide_legend(title="Training\nSet Size"),
+         linetype = guide_legend(title="Model")) +
+  theme(text = element_text(size = 15)) +
+  ggsave(glue('../figures/rrn/{modeltype}_hs_{dataset_type}.png'), width = 6, height = 4)
+```
+
+## Test plot
+```{r, message=F}
+hues = hue_pal()(4)
+hues = c('gray', hues)
+
+solvers = read_tsv("../data/processed/subject_data.tsv") %>% 
+  filter(solver) %>% 
+  pull(subject_id)
+
+df = read_tsv(glue("../data/processed/puzzle_data.tsv")) %>%
+  filter(subject_id %in% solvers,
+         phase == 2) %>% 
+  mutate(model = 'Humans') %>% 
+  select(model, house_type, house_index, cell_index, digit_set, correct)
+
+df = df.hs.test %>% 
+  select(model, house_type, house_index, cell_index, digit_set, correct) %>% 
+  bind_rows(df) %>% 
+  filter(house_type + house_index + cell_index + digit_set <= 1) %>% 
+  mutate(control = house_type + house_index + cell_index + digit_set == 0) %>% 
+  pivot_longer(cols = c(control, house_type, house_index, cell_index, digit_set),
+               names_to = 'condition') %>% 
+  filter(value) %>% 
+  select(model, condition, correct) %>% 
+  mutate(condition = recode(condition,
+                            control = 'Control',
+                            digit_set = 'Digit\nSet',
+                            house_type = 'House\nType',
+                            house_index = 'House\nIndex',
+                            cell_index = 'Cell\nIndex'),
+         condition = factor(condition, levels = c('Control',
+                                                  'Digit\nSet',
+                                                  'House\nType',
+                                                  'House\nIndex',
+                                                  'Cell\nIndex')),
+         model = factor(model, levels = c('Humans', 'RRN', 'DRRN')))
+
+df %>% 
+  get_beta_hdci(correct,
+                100000,
+                c('model', 'condition'),
+                seed=0) %>% 
+  ggplot(aes(x = model,
+             color = condition,
+             group = condition)) +
+  geom_point(aes(y = mean),
+           stat = 'identity',
+           size = 3,
+           position = position_dodge(.6)) +
+  geom_linerange(aes(ymin = hdci_l,
+                     ymax = hdci_h),
+                 position = position_dodge2(.6)) +
+  coord_cartesian(ylim = c(-.05, 1.05)) + 
+  scale_y_continuous(breaks = c(0, .25, .5, .75, 1)) +
+  scale_color_manual(values=hues) +
+  labs(x = "Model",
+       y = "Accuracy") +
+  guides(color = guide_legend(title=element_blank())) +
+  theme(legend.position = 'bottom',
+        text = element_text(size = 15))  +
+  ggsave('../figures/rrn/test_accuracy.png', width = 6, height = 4)
+
+
+```
+

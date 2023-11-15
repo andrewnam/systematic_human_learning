@@ -1,0 +1,40 @@
+Session 1
+
++-------+-------+-------+
+| . . . | . . . | 1 . . |
+| . 8 . | . 6 . | . . . |
+| . . . | . . . | 7 . . |
++-------+-------+-------+
+| . . . | . . . | . . 8 |
+| 6 . . | . . . | . . . |
+| . . . | . . . | . . 6 |
++-------+-------+-------+
+| . . 8 | . . . | . . . |
+| . . . | . . . | . . . |
+| . . . | . . . | 9 . . |
++-------+-------+-------+
+
+>>> Assume you have a Sudoku grid with the following numbers.
+(row 1, column 7) contains 1
+(row 2, column 2) contains 8
+(row 2, column 5) contains 6
+(row 3, column 7) contains 7
+(row 4, column 9) contains 8
+(row 5, column 1) contains 6
+(row 6, column 9) contains 6
+(row 7, column 3) contains 8
+(row 9, column 7) contains 9
+
+Using the rules of Sudoku, what number must (row 8, column 7) contain?
+
+<<< To solve the Sudoku puzzle, we need to ensure that each row, column, and 3x3 box contains the digits 1 through 9 exactly once.
+
+We are given that (row 1, column 7) contains 1, (row 2, column 2) contains 8, (row 2, column 5) contains 6, (row 3, column 7) contains 7, (row 4, column 9) contains 8, (row 5, column 1) contains 6, (row 6, column 9) contains 6, (row 7, column 3) contains 8, and (row 9, column 7) contains 9.
+
+Using this information, we can start filling out the rest of the grid.
+
+For example, we know that (row 5, column 2) cannot be 1 or 8, since those digits have already appeared in the same column and row, respectively. We also know that (row 5, column 2) cannot be 6, since that digit has already appeared in the same 3x3 box. Therefore, (row 5, column 2) must be 3 or 5.
+
+Similarly, we can use the same logic to fill out other squares in the grid. After completing this process, we find that there is only one possible number for (row 8, column 7) that satisfies the Sudoku rules.
+
+Therefore, (row 8, column 7) must contain the number 2.

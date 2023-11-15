@@ -1,0 +1,42 @@
+qid2	sid_hash	response	q_strategy
+1	ca04a1	4	The middle box on the left has both a 7 and a 4. I then looked in the row of the 7 of that box and saw the 4 on the same row on the box on the right hand side. This eliminated the possibility of the blue box of that row being either 7 or 4. And because the box in the middle of the left side also contains a 4, that meant the blue box of that same row could be a 7. Thus, the answer was 4.
+2	1245bf	1	I eliminated the 3 x 3 box containing the 3 and 1.  Next I looked at the columns and eliminated the places the 1 and 3 could go.
+3	b5c803	1	The top middle box already has a 1. The blue square in the middle box can't have a 1 because there's a 1 in that row already. The blue square in the bottom box can't have a 1 because there's a 1 in that row already.
+4	1833ce	5	I used the process of elimination.  The number had to be either 3 or 5.  I went empty cell by empty cell and determined the only possible number.
+5	2e8ec7	8	I figured that it had to be 8 because nothing else in that row could be 2. Next i checked the surrounding boxes to see which number would best fit. Or whatever number shared the same box or or row and collumn. If they did share columns i would make my final decision.
+6	c9e275	6	i confidence. i strongly says this one  6.
+7	4ae018	6	Find a row or column with 3 numbers.  Select a pair that are not in the 3 numbers (this will be obvious from the other numbers not in the row - but maybe not in a fully populated puzzle).  Then try to put the pair in every cell other than origin, like they are immigrants looking for a home.  If both fit, move on.  When one fails to fit, it will fit in origin.
+8	c23ac3	7	I found 7 would be the right choice when compared to other boxes
+9	b26711	2	Where can 2 go
+10	a5148a	7	i counted from 1 thru 9 to see if it would fit
+11	847f08	2	I tried to figure out which blue boxes could not be 9 or 2. that helped me determine that the green box could only be 2
+12	783c6f	2	i choose  randomly .
+13	80cc0e	7	I looked along the blue boxes and saw which ones didn't have the number 9 or 7 in them. Then I looked at the individual squares to see which already had 9 or 7 and eliminated those from my answer. The answer I chose was the only spot left it would fit.
+14	1460a0	1	I looked the the top column first and saw the 8 and 1 were in the same box so I could rule out the top box. I then moved down to the middle 3x3 box and saw both an 8 and 1 so that rules that box out. I lastly went to the last box and saw that that blue box could not be 1 but could be 8. Therefore I could figure out that the green box was a 1 and not an 8.
+15	6ffc51	5	I used my experience and learned about these type of skills
+16	880ada	9	The row to the right already has a number in the blue square and the row beside it would be 7, so since there is already a seven in the row, that only leave a 9 for the green square.
+17	1af36d	4	I assessed the key numbers (5 and 4) and checked where they both fall, then separated the lines where they are both aligned then used the remaining boxes and placed them in.
+18	e41709	7	The answer had to be 7. 4 and 7 negate 4 or 7 being the answer to any of blue squares in the middle box on the right.  4 & 7 appear together in the third column from the left so it couldn't be either of those. 7 appears in the only column that doesn't have a number in the blue box, so that box could be a 4. Hence the answer has to be 7.
+19	654deb	5	first 3x3 cannot be 5 or 75th blue block in must be 7.  5 is only remaining number
+20	976a3e	3	Using the left square (9 +1 + 10)  Then for the middle square used the 3 for a 7 + 3 = 10
+21	c87080	3	I basically scanned over each grid, and then  canceled out the 5's first, and then determined it would have to be a 3.
+22	fd56d9	9	I see what two numbers are the most on the board. From there I see how many places one of the numbers can fit on the blue line. If it can fit in 2 different places than that means I must add the other number to the green box.
+23	c30fcd	3	good task
+24	7be1e0	4	I looked at rows / sections I could rule out b/c they contained both numbers. Then I looked at which blocks could have one of the numbers. Finally, I put in the remaining number.
+25	04163c	7	My strategy was very simple I focused o the numbers """"7 & 4"""" After that I choose the number which I think has more chances to be in the blue box.
+26	bc967f	7	I knew it had to be one of the other numbers and I knew it couldn't be 5, 8, or 6 and the one next to it couldn't be 4.
+27	2a326c	8	It really is a guess.
+28	2583d8	1	I took the 1s away from te blue box then did the same for the 8s and then tried to figure which possibility the 1 or 8 went.
+29	4e726b	8	i looked at the numbers around the one i currently placed.
+30	7f6076	1	in that row and column ,there was not a similar number to the 1 i chose.
+31	c81753	9	I started with the far left 3 blue squares and determined none of those could be a 3 or 9 bc they already below to a 3x3 square that contains those numbers. I then moved on to the columns on the left side of the screen. The first column contains a 3 and 9 so I moved to the next column with an open blue square. That column has a 9 in it so I know it has to be a 3.
+32	406960	8	I looked at each blue box and checked to see if an 8 could be used anywhere else besides that box. If none could I knew that would be my answer. I randomly chose to start with the 8, if that one didn't work I would have moved on to another number.
+33	138639	1	Just a choice
+34	5b2d0e	7	Complete guess
+35	41a490	8	i strongly identify the answer 8.
+36	9ac645	1	I figured that the leftmost blue square could be 4, which meant that the square I am supposed to solve would be 1.
+37	5c8a8c	5	I started by looking at where the 5's and 9's were in the other boxes. I traced them to the row of blue to see which of the blue squares could not have the 5's and 9's. By using that process, I eliminated all of the boxes that could not possibly have a 5 and 9, which left me with the solution.
+38	177f2c	6	I looked at all the other numbers on the board and chose a number randomly.
+39	3a34a5	4	I checked to see where there could or not be other fours or fives. It seemed to fit the rule to put a 4 in the empty slot.
+40	b3b8b2	6	I first located the 9 box quadrant that the blue shaded section intercedes where the two numbers are located (in this case, the bottom middle quadrant). This eliminates both numbers from the bottom three blue shaded squares. Then I identify the row that contains both numbers (in this case the fourth row from the bottom). This eliminates both numbers from the fourth blue shaded box from the bottom. Then I can eliminate the top blue shaded box from containing a 6, because it is already contained in that top row. This leaves only one shaded blue box remaining where the 6 must be located.
+41	34fbed	8	8

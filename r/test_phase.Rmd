@@ -1,0 +1,752 @@
+---
+title: "Test Phase"
+author: "Andrew"
+date: "11/12/2020"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_depth: 4
+    theme: cosmo
+    highlight: tango
+    pandoc_args: ["--number-offset=2"]
+---
+
+This file is for comparing the analyses results between pilot (random effects)
+and the final dataset. Since there are two ways to regress participants'
+performances (fixed effects and random effects models), the final dataset
+has two types of results.
+
+```{r setup, include=FALSE}
+# these options here change the formatting of how comments are rendered
+knitr::opts_chunk$set(collapse = TRUE,
+                      comment = "#>",
+                      results = "hold",
+                      fig.show = "hold")
+
+# Clear any existing variables
+rm(list = ls())
+```
+
+```{r libraries, message=FALSE}
+library(lme4)
+library(broom)
+library(glue)
+library(brms)
+library(cowplot)
+library(tidyverse)
+
+source('functions.R')
+```
+
+```{r plot_theme, echo=F}
+# Set ggplot theme
+theme_set(theme_light() +
+            theme(plot.title = element_text(hjust = 0.5),
+                  text = element_text(size=14)))
+```
+
+# Initialization
+
+## Helper Functions
+
+```{r}
+brm_diagnostics = function(brm_model) {
+  s = brm_model %>% 
+    summary()
+  
+  df = as_tibble(s[['fixed']], rownames = "term")
+  return (df)
+}
+
+get_path = function(...) {
+  path = list(...)
+  dirname = plyr::splat(file.path)(path %>% head(-1))
+  dir.create(dirname, recursive = T, showWarnings = F)
+  filename = plyr::splat(file.path)(path)
+  return (filename)
+}
+
+get_model_filename = function (analysis_name, df_subset, ht_subset, dv) {
+  dirname = file.path('cache', analysis_name, df_subset, ht_subset)
+  dir.create(dirname, recursive = T, showWarnings = F)
+  filename = file.path(dirname, dv)
+  return (filename)
+}
+```
+
+## Data Wrangling
+```{r}
+df_subjects = read_tsv("../data/processed/subject_data.tsv")
+solvers = df_subjects %>% 
+  filter(solver) %>% 
+  pull(subject_id)
+
+df_puzzles = read_tsv(glue("../data/processed/puzzle_data.tsv")) %>% 
+  filter(subject_id %in% solvers,
+         phase == 2) %>% 
+  rename(ht = house_type,
+         hi = house_index,
+         ci = cell_index,
+         ds = digit_set) %>% 
+  mutate(subject_id = as.factor(subject_id),
+         set = 1 + floor((trial - 1) / 8),
+         lset = log2(8*set - 3.5),
+         ltrial = log2(trial),
+         lduration = log2(duration),
+         gp = hi | ci) %>% 
+  arrange(subject_id, trial) %>% 
+  select(subject_id, set, trial, ht, hi, ci, ds, gp, correct, duration, lset, ltrial, lduration)
+```
+
+## Regression Set-up
+
+Computing Bayes Factor requires that the models are linked to the same DataFrame object, so can't create them ad hoc. Need to create them all beforehand.
+```{r}
+# Create a dataframe where all models will be stored 
+df.bmodels = tibble()
+
+df.acc = df_puzzles %>%
+  mutate(correct = as.numeric(correct),
+         gp = hi | ci)
+df.acc.ht_t = df.acc %>% filter(ht)
+df.acc.ht_f = df.acc %>% filter(!ht)
+df.dur = df.acc %>% filter(correct == 1)
+df.dur.ht_t = df.dur %>% filter(ht)
+df.dur.ht_f = df.dur %>% filter(!ht)
+
+df.acc2 = df.acc %>% filter(trial <= 16)
+df.acc.ht_t2 = df.acc2 %>% filter(ht)
+df.acc.ht_f2 = df.acc2 %>% filter(!ht)
+df.dur2 = df.acc2 %>% filter(correct == 1)
+df.dur.ht_t2 = df.dur2 %>% filter(ht)
+df.dur.ht_f2 = df.dur2 %>% filter(!ht)
+
+df.acc6 = df.acc %>%
+  filter(trial > 16) %>% 
+  mutate(trial = trial - 16,
+         ltrial = log2(trial))
+df.acc.ht_t6 = df.acc6 %>% filter(ht)
+df.acc.ht_f6 = df.acc6 %>% filter(!ht)
+df.dur6 = df.acc6 %>% filter(correct == 1)
+df.dur.ht_t6 = df.dur6 %>% filter(ht)
+df.dur.ht_f6 = df.dur6 %>% filter(!ht)
+```
+
+# Figures
+
+## Functions
+
+```{r}
+
+df_puzzles %>% 
+  mutate(set = 1 + floor((trial - 1) / 8),
+         lset = log2(8*set - 4),
+         ltrial = log2(trial),
+         correct = as.numeric(correct),
+         x = 2^lset) %>% 
+  select(trial, set, lset, x)
+```
+
+```{r}
+df_puzzles %>% 
+  mutate(condition = ifelse(ht, 'Changed', 'Unchanged')) %>% 
+  mutate(set = 1 + floor((trial - 1) / 8),
+         lset = log2(set),
+         correct = as.numeric(correct)) %>% 
+  ggplot(aes(x = lset, y = correct, color = condition)) +
+  stat_summary(position = position_dodge(.1)) +
+  coord_cartesian(ylim = c(.8, 1))
+
+```
+
+
+```{r}
+
+create_acc_plot = function(df) {
+  # df must contain trial, condition, correct
+  df %>% 
+    mutate(set = 1 + floor((trial - 1) / 8),
+           lset = log2(set),
+           correct = as.numeric(correct)) %>% 
+    ggplot(aes(x = lset, y = correct, color = condition)) +
+    stat_summary(position = position_dodge(.1)) +
+    scale_x_continuous(breaks = log2(seq(1, 8)),
+                       labels = seq(1, 8),
+                       minor_breaks = log2(seq(1, 8))) +
+    coord_cartesian(ylim = c(.8, 1)) +
+    theme(legend.position = "none",
+          text = element_text(size = 20)) +
+    labs(x = "Set",
+         y = 'Accuracy')
+}
+
+
+create_dur_plot = function(df) {
+  # df must contain trial, condition, duration
+  df %>% 
+    mutate(lduration = log2(duration),
+           set = 1 + floor((trial - 1) / 8),
+           lset = log2(set)) %>% 
+    ggplot(aes(x = lset, y = lduration, color = condition)) +
+    stat_summary(position = position_dodge(width = .1)) +
+    scale_x_continuous(breaks = log2(seq(1, 8)),
+                       labels = seq(1, 8),
+                       minor_breaks = log2(seq(1, 8))) +
+    scale_y_continuous(breaks = log2(seq(10, 22, 4)),
+                       labels = seq(10, 22, 4)) +
+    coord_cartesian(ylim = log2(c(10, 22)),
+                    clip = 'off') +
+    theme(legend.position = "none",
+          text = element_text(size = 20)) +
+    labs(x = "Set",
+         y = 'Seconds')
+}
+```
+
+## Accuracy plots
+```{r}
+plot.ht.acc = df_puzzles %>% 
+  mutate(condition = ifelse(ht, 'Changed', 'Unchanged')) %>% 
+  create_acc_plot()
+ggsave(glue("../figures/test_phase/ht_acc.png"), width=6, height=4)
+
+plot.hi.acc = df_puzzles %>% 
+  mutate(condition = ifelse(hi, 'Changed', 'Unchanged')) %>% 
+  create_acc_plot()
+ggsave(glue("../figures/test_phase/hi_acc.png"), width=6, height=4)
+
+plot.ci.acc = df_puzzles %>% 
+  mutate(condition = ifelse(ci, 'Changed', 'Unchanged')) %>% 
+  create_acc_plot()
+ggsave(glue("../figures/test_phase/ci_acc.png"), width=6, height=4)
+
+plot.ds.acc = df_puzzles %>% 
+  mutate(condition = ifelse(ds, 'Changed', 'Unchanged')) %>% 
+  create_acc_plot()
+ggsave(glue("../figures/test_phase/ds_acc.png"), width=6, height=4)
+
+plot.gp.acc = df_puzzles %>% 
+  mutate(condition = ifelse(gp, 'Changed', 'Unchanged')) %>% 
+  create_acc_plot()
+ggsave(glue("../figures/test_phase/gp_acc.png"), width=6, height=4)
+```
+
+## Duration plots
+
+```{r}
+plot.ht.dur = df_puzzles %>% 
+  filter(correct) %>% 
+  mutate(condition = ifelse(ht, 'Changed', 'Unchanged')) %>% 
+  create_dur_plot()
+ggsave(glue("../figures/test_phase/ht_rt.png"), width=6, height=4)
+
+plot.hi.dur = df_puzzles %>% 
+  filter(correct) %>% 
+  mutate(condition = ifelse(hi, 'Changed', 'Unchanged')) %>% 
+  create_dur_plot()
+ggsave(glue("../figures/test_phase/hi_rt.png"), width=6, height=4)
+
+plot.ci.dur = df_puzzles %>% 
+  filter(correct) %>% 
+  mutate(condition = ifelse(ci, 'Changed', 'Unchanged')) %>% 
+  create_dur_plot()
+ggsave(glue("../figures/test_phase/ci_rt.png"), width=6, height=4)
+
+plot.ds.dur = df_puzzles %>% 
+  filter(correct) %>% 
+  mutate(condition = ifelse(ds, 'Changed', 'Unchanged')) %>% 
+  create_dur_plot()
+ggsave(glue("../figures/test_phase/ds_rt.png"), width=6, height=4)
+
+plot.gp.dur = df_puzzles %>% 
+  filter(correct) %>% 
+  mutate(condition = ifelse(gp, 'Changed', 'Unchanged')) %>% 
+  create_dur_plot()
+ggsave(glue("../figures/test_phase/gp_rt.png"), width=6, height=4)
+```
+
+## Legend
+
+```{r}
+(plot.ht.acc +
+   theme(legend.position="bottom")) %>% 
+  get_legend() %>% 
+  ggdraw()
+ggsave("../figures/test_phase/legend.png", width = 6, height = 1)
+```
+
+## Plot for manuscript
+
+```{r}
+legend = (plot.ds.dur +
+            theme(legend.position="bottom")) %>% 
+  get_legend()
+
+p = ggdraw() +
+  draw_plot(plot.ds.acc, x = 0, y = .5, width = .5, height = .5) +
+  draw_plot(plot.ht.acc, x = .5, y = .5, width = .5, height = .5) +
+  draw_plot(plot.ds.dur, x = 0, y = 0, width = .5, height = .5) + 
+  draw_plot(plot.ht.dur, x = .5, y = 0, width = .5, height = .5)
+
+ggdraw() +
+  draw_plot(p, x = 0, y = .05, width = 1, height = .95) +
+  draw_grob(legend, 0, 0, 1, .05) +
+  ggsave(glue("../figures/test_phase/ds_ht_results.png"), width=6, height=5.33)
+```
+
+## Plot for supplement
+```{r}
+legend = (plot.gp.acc +
+            theme(legend.position="bottom")) %>% 
+  get_legend()
+
+p = ggdraw() +
+  draw_plot(plot.gp.acc, x = 0, y = .666, width = .5, height = .334) +
+  draw_plot(plot.gp.dur, x = .5, y = .666, width = .5, height = .334) +
+  draw_plot(plot.hi.acc, x = 0, y = .333, width = .5, height = .333) + 
+  draw_plot(plot.hi.dur, x = .5, y = .333, width = .5, height = .333) + 
+  draw_plot(plot.ci.acc, x = 0, y = 0, width = .5, height = .333) + 
+  draw_plot(plot.ci.dur, x = .5, y = 0, width = .5, height = .333) + 
+  draw_plot_label(label = c("A", "B", "C", "D", "E", "F"),
+                  size = 15,
+                  x = c(0, .5, 0, 0.5, 0, .5), y = c(1, 1, .666, .666, .333, .333))
+
+ggdraw() +
+  draw_plot(p, x = 0, y = .05, width = 1, height = .95) +
+  draw_grob(legend, 0, 0, 1, .05) +
+  ggsave(glue("../figures/test_phase/gp_hi_ci_results.png"), width=6, height=8)
+```
+
+# House Type
+
+## Main Analysis
+
+```{r}
+analysis_name = 'housetype_main'
+
+bmodel.ht.acc = brm(correct ~ ht*ltrial + (ltrial | subject_id),
+                    family = 'bernoulli',
+                    data = df.acc,
+                    save_all_pars = TRUE,
+                    seed = 0,
+                    cores = 4,
+                    refresh = 0,
+                    file = get_model_filename(analysis_name, 'allsets', 'ht_both', 'accuracy'))
+
+bmodel.ht.dur = brm(lduration ~ ht*ltrial + (ltrial | subject_id),
+                    data = df.dur,
+                    save_all_pars = TRUE,
+                    seed = 0,
+                    cores = 4,
+                    refresh = 0,
+                    file = get_model_filename(analysis_name, 'allsets', 'ht_both', 'duration'))
+
+bmodel.ht.acc2 = brm(correct ~ ht + ltrial + (ltrial | subject_id),
+                     family = 'bernoulli',
+                     data = df.acc2,
+                     iter = 5000,
+                     control = list(adapt_delta = 0.99),
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'first2sets', 'ht_both', 'accuracy'))
+
+bmodel.ht.dur2 = brm(lduration ~ ht + ltrial + (ltrial | subject_id),
+                     data = df.dur2,
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'first2sets', 'ht_both', 'duration'))
+
+bmodel.ht.acc6 = brm(correct ~ ht + ltrial + (ltrial | subject_id),
+                     family = 'bernoulli',
+                     data = df.acc6,
+                     iter = 5000,
+                     control = list(adapt_delta = 0.99),
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'last6sets', 'ht_both', 'accuracy'))
+
+bmodel.ht.dur6 = brm(lduration ~ ht + ltrial + (ltrial | subject_id),
+                     data = df.dur6,
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'last6sets', 'ht_both', 'duration'))
+
+df.bmodels = tibble(dv = c('accuracy', 'duration', 'accuracy', 'duration', 'accuracy', 'duration'),
+                    model = analysis_name,
+                    subset = c('allsets', 'allsets', 'first2sets', 'first2sets', 'last6sets', 'last6sets'),
+                    ht_cond = 'both',
+                    fit = list(bmodel.ht.acc, bmodel.ht.dur, bmodel.ht.acc2, bmodel.ht.dur2, bmodel.ht.acc6, bmodel.ht.dur6)) %>% 
+  rbind(df.bmodels)
+```
+
+## Controlling for Starting House Type
+
+```{r}
+analysis_name = 'housetype_ht0'
+
+df = df_subjects %>% 
+  mutate(start_col = tut_house == 'column') %>% 
+  select(subject_id, start_col)
+
+bmodel.ht.ht0.acc = brm(correct ~ start_col*ht*ltrial + (ltrial | subject_id),
+                        family = 'bernoulli',
+                        data = df.acc %>% 
+                          merge(df),
+                        save_all_pars = TRUE,
+                        seed = 0,
+                        cores = 4,
+                        refresh = 0,
+                        file = get_model_filename(analysis_name, 'allsets', 'ht_both', 'accuracy'))
+
+bmodel.ht.ht0.dur = brm(lduration ~ start_col*ht*ltrial + (ltrial | subject_id),
+                        data = df.dur %>% 
+                          merge(df),
+                        save_all_pars = TRUE,
+                        seed = 0,
+                        cores = 4,
+                        refresh = 0,
+                        file = get_model_filename(analysis_name, 'allsets', 'ht_both', 'duration'))
+
+bmodel.ht.ht0.acc2 = brm(correct ~ start_col*ht + ltrial + (ltrial | subject_id),
+                         family = 'bernoulli',
+                         data = df.acc2 %>% 
+                           merge(df),
+                         save_all_pars = TRUE,
+                         seed = 0,
+                         cores = 4,
+                         refresh = 0,
+                         file = get_model_filename(analysis_name, 'first2sets', 'ht_both', 'accuracy'))
+
+bmodel.ht.ht0.dur2 = brm(lduration ~ start_col*ht + ltrial + (ltrial | subject_id),
+                         data = df.dur2 %>% 
+                           merge(df),
+                         save_all_pars = TRUE,
+                         seed = 0,
+                         cores = 4,
+                         refresh = 0,
+                         file = get_model_filename(analysis_name, 'first2sets', 'ht_both', 'duration'))
+
+bmodel.ht.ht0.acc6 = brm(correct ~ start_col*ht + ltrial + (ltrial | subject_id),
+                         family = 'bernoulli',
+                         data = df.acc6 %>% 
+                           merge(df),
+                         iter = 5000,
+                         control = list(adapt_delta = 0.99),
+                         save_all_pars = TRUE,
+                         seed = 0,
+                         cores = 4,
+                         refresh = 0,
+                         file = get_model_filename(analysis_name, 'last6sets', 'ht_both', 'accuracy'))
+
+bmodel.ht.ht0.dur6 = brm(lduration ~ start_col*ht + ltrial + (ltrial | subject_id),
+                         data = df.dur6 %>% 
+                           merge(df),
+                         save_all_pars = TRUE,
+                         seed = 0,
+                         cores = 4,
+                         refresh = 0,
+                         file = get_model_filename(analysis_name, 'last6sets', 'ht_both', 'duration'))
+
+df.bmodels = tibble(dv = c('accuracy', 'duration', 'accuracy', 'duration', 'accuracy', 'duration'),
+                    model = analysis_name,
+                    subset = c('allsets', 'allsets', 'first2sets', 'first2sets', 'last6sets', 'last6sets'),
+                    ht_cond = 'both',
+                    fit = list(bmodel.ht.ht0.acc, bmodel.ht.ht0.dur, 
+                               bmodel.ht.ht0.acc2, bmodel.ht.ht0.dur2, 
+                               bmodel.ht.ht0.acc6, bmodel.ht.ht0.dur6)) %>% 
+  rbind(df.bmodels)
+```
+
+# Change in position
+
+## All collapsed
+
+```{r}
+analysis_name = 'position'
+
+bmodel.gp.acc = brm(correct ~ gp*ltrial + (ltrial | subject_id),
+                    family = 'bernoulli',
+                    data = df.acc,
+                    save_all_pars = TRUE,
+                    seed = 0,
+                    cores = 4,
+                    refresh = 0,
+                    file = get_model_filename(analysis_name, 'allsets', 'ht_both', 'accuracy'))
+
+bmodel.gp.dur = brm(lduration ~ gp*ltrial + (ltrial | subject_id),
+                    data = df.dur,
+                    save_all_pars = TRUE,
+                    seed = 0,
+                    cores = 4,
+                    refresh = 0,
+                    file = get_model_filename(analysis_name, 'allsets', 'ht_both', 'duration'))
+
+bmodel.gp.acc2 = brm(correct ~ gp + ltrial + (ltrial | subject_id),
+                     family = 'bernoulli',
+                     data = df.acc2,
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'first2sets', 'ht_both', 'accuracy'))
+
+bmodel.gp.dur2 = brm(lduration ~ gp + ltrial + (ltrial | subject_id),
+                     data = df.dur2,
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'first2sets', 'ht_both', 'duration'))
+
+bmodel.gp.acc6 = brm(correct ~ gp + ltrial + (ltrial | subject_id),
+                     family = 'bernoulli',
+                     data = df.acc6,
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'last6sets', 'ht_both', 'accuracy'))
+
+bmodel.gp.dur6 = brm(lduration ~ gp + ltrial + (ltrial | subject_id),
+                     data = df.dur6,
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'last6sets', 'ht_both', 'duration'))
+
+df.bmodels = tibble(dv = c('accuracy', 'duration', 'accuracy', 'duration', 'accuracy', 'duration'),
+                    model = analysis_name,
+                    subset = c('allsets', 'allsets', 'first2sets', 'first2sets', 'last6sets', 'last6sets'),
+                    ht_cond = 'both',
+                    fit = list(bmodel.gp.acc, bmodel.gp.dur, bmodel.gp.acc2, bmodel.gp.dur2, bmodel.gp.acc6, bmodel.gp.dur6)) %>% 
+  rbind(df.bmodels)
+```
+
+## With HT unchanged
+
+```{r}
+analysis_name = 'position'
+ht_subset = 'ht_false'
+
+bmodel.pos.ht_f.acc = brm(correct ~ hi*ci*ltrial + (ltrial | subject_id),
+                          family = 'bernoulli',
+                          iter = 8000,
+                          data = df.acc.ht_f,
+                          save_all_pars = TRUE,
+                          seed = 0,
+                          cores = 4,
+                          refresh = 0,
+                          file = get_model_filename(analysis_name, 'allsets', ht_subset, 'accuracy'))
+
+bmodel.pos.ht_f.dur = brm(lduration ~ hi*ci*ltrial + (ltrial | subject_id),
+                          data = df.dur.ht_f,
+                          save_all_pars = TRUE,
+                          seed = 0,
+                          cores = 4,
+                          refresh = 0,
+                          file = get_model_filename(analysis_name, 'allsets', ht_subset, 'duration'))
+
+bmodel.pos.ht_f.acc2 = brm(correct ~ hi*ci + ltrial + (ltrial | subject_id),
+                           family = 'bernoulli',
+                           iter = 8000,
+                           control = list(adapt_delta = 0.99),
+                           data = df.acc.ht_f2,
+                           save_all_pars = TRUE,
+                           seed = 0,
+                           cores = 4,
+                           refresh = 0,
+                           file = get_model_filename(analysis_name, 'first2sets', ht_subset, 'accuracy'))
+
+bmodel.pos.ht_f.dur2 = brm(lduration ~ hi*ci + ltrial + (ltrial | subject_id),
+                           data = df.dur.ht_f2,
+                           save_all_pars = TRUE,
+                           seed = 0,
+                           cores = 4,
+                           refresh = 0,
+                           file = get_model_filename(analysis_name, 'first2sets', ht_subset, 'duration'))
+
+bmodel.pos.ht_f.acc6 = brm(correct ~ hi*ci + ltrial + (ltrial | subject_id),
+                           family = 'bernoulli',
+                           data = df.acc.ht_f6,
+                           save_all_pars = TRUE,
+                           seed = 0,
+                           cores = 4,
+                           refresh = 0,
+                           file = get_model_filename(analysis_name, 'last6sets', ht_subset, 'accuracy'))
+
+bmodel.pos.ht_f.dur6 = brm(lduration ~ hi*ci + ltrial + (ltrial | subject_id),
+                           data = df.dur.ht_f6,
+                           save_all_pars = TRUE,
+                           seed = 0,
+                           cores = 4,
+                           refresh = 0,
+                           file = get_model_filename(analysis_name, 'last6sets', ht_subset, 'duration'))
+
+df.bmodels = tibble(dv = c('accuracy', 'duration', 'accuracy', 'duration', 'accuracy', 'duration'),
+                    model = analysis_name,
+                    subset = c('allsets', 'allsets', 'first2sets', 'first2sets', 'last6sets', 'last6sets'),
+                    ht_cond = ht_subset,
+                    fit = list(bmodel.pos.ht_f.acc, bmodel.pos.ht_f.dur, bmodel.pos.ht_f.acc2,
+                               bmodel.pos.ht_f.dur2, bmodel.pos.ht_f.acc6, bmodel.pos.ht_f.dur6)) %>% 
+  rbind(df.bmodels)
+```
+
+## With HT changed
+
+```{r}
+analysis_name = 'position'
+ht_subset = 'ht_true'
+
+bmodel.pos.ht_t.acc = brm(correct ~ hi*ci*ltrial + (ltrial | subject_id),
+                          family = 'bernoulli',
+                          data = df.acc.ht_t,
+                          save_all_pars = TRUE,
+                          seed = 0,
+                          cores = 4,
+                          refresh = 0,
+                          file = get_model_filename(analysis_name, 'allsets', ht_subset, 'accuracy'))
+
+bmodel.pos.ht_t.dur = brm(lduration ~ hi*ci*ltrial + (ltrial | subject_id),
+                          data = df.dur.ht_t,
+                          save_all_pars = TRUE,
+                          seed = 0,
+                          cores = 4,
+                          refresh = 0,
+                          file = get_model_filename(analysis_name, 'allsets', ht_subset, 'duration'))
+
+bmodel.pos.ht_t.acc2 = brm(correct ~ hi*ci + ltrial + (ltrial | subject_id),
+                           family = 'bernoulli',
+                           data = df.acc.ht_t2,
+                           save_all_pars = TRUE,
+                           seed = 0,
+                           cores = 4,
+                           refresh = 0,
+                           file = get_model_filename(analysis_name, 'first2sets', ht_subset, 'accuracy'))
+
+bmodel.pos.ht_t.dur2 = brm(lduration ~ hi*ci + ltrial + (ltrial | subject_id),
+                           data = df.dur.ht_t2,
+                           iter = 5000,
+                           control = list(adapt_delta = 0.99),
+                           save_all_pars = TRUE,
+                           seed = 0,
+                           cores = 4,
+                           refresh = 0,
+                           file = get_model_filename(analysis_name, 'first2sets', ht_subset, 'duration'))
+
+bmodel.pos.ht_t.acc6 = brm(correct ~ hi*ci + ltrial + (ltrial | subject_id),
+                           family = 'bernoulli',
+                           iter = 8000,
+                           data = df.acc.ht_t6,
+                           save_all_pars = TRUE,
+                           seed = 0,
+                           cores = 4,
+                           refresh = 0,
+                           file = get_model_filename(analysis_name, 'last6sets', ht_subset, 'accuracy'))
+
+bmodel.pos.ht_t.dur6 = brm(lduration ~ hi*ci + ltrial + (ltrial | subject_id),
+                           data = df.dur.ht_t6,
+                           save_all_pars = TRUE,
+                           seed = 0,
+                           cores = 4,
+                           refresh = 0,
+                           file = get_model_filename(analysis_name, 'last6sets', ht_subset, 'duration'))
+
+df.bmodels = tibble(dv = c('accuracy', 'duration', 'accuracy', 'duration', 'accuracy', 'duration'),
+                    model = analysis_name,
+                    subset = c('allsets', 'allsets', 'first2sets', 'first2sets', 'last6sets', 'last6sets'),
+                    ht_cond = ht_subset,
+                    fit = list(bmodel.pos.ht_t.acc, bmodel.pos.ht_t.dur, bmodel.pos.ht_t.acc2,
+                               bmodel.pos.ht_t.dur2, bmodel.pos.ht_t.acc6, bmodel.pos.ht_t.dur6)) %>% 
+  rbind(df.bmodels)
+```
+
+# Change in Digit Set
+
+## Regressions
+
+```{r}
+analysis_name = 'digitset'
+
+bmodel.ds.acc = brm(correct ~ ds*ltrial + (ltrial | subject_id),
+                    family = 'bernoulli',
+                    data = df.acc,
+                    save_all_pars = TRUE,
+                    seed = 0,
+                    cores = 4,
+                    refresh = 0,
+                    file = get_model_filename(analysis_name, 'allsets', 'ht_both', 'accuracy'))
+
+bmodel.ds.dur = brm(lduration ~ ds*ltrial + (ltrial | subject_id),
+                    data = df.dur,
+                    save_all_pars = TRUE,
+                    seed = 0,
+                    cores = 4,
+                    refresh = 0,
+                    file = get_model_filename(analysis_name, 'allsets', 'ht_both', 'duration'))
+
+bmodel.ds.acc2 = brm(correct ~ ds + ltrial + (ltrial | subject_id),
+                     family = 'bernoulli',
+                     data = df.acc2,
+                     iter = 5000,
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'first2sets', 'ht_both', 'accuracy'))
+
+bmodel.ds.dur2 = brm(lduration ~ ds + ltrial + (ltrial | subject_id),
+                     data = df.dur2,
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'first2sets', 'ht_both', 'duration'))
+
+bmodel.ds.acc6 = brm(correct ~ ds + ltrial + (ltrial | subject_id),
+                     family = 'bernoulli',
+                     data = df.acc6,
+                     iter = 2000,
+                     control = list(adapt_delta = 0.99),
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'last6sets', 'ht_both', 'accuracy'))
+
+bmodel.ds.dur6 = brm(lduration ~ ds + ltrial + (ltrial | subject_id),
+                     data = df.dur6,
+                     save_all_pars = TRUE,
+                     seed = 0,
+                     cores = 4,
+                     refresh = 0,
+                     file = get_model_filename(analysis_name, 'last6sets', 'ht_both', 'duration'))
+
+df.bmodels = tibble(dv = c('accuracy', 'duration', 'accuracy', 'duration', 'accuracy', 'duration'),
+                    model = analysis_name,
+                    subset = c('allsets', 'allsets', 'first2sets', 'first2sets', 'last6sets', 'last6sets'),
+                    ht_cond = 'both',
+                    fit = list(bmodel.ds.acc, bmodel.ds.dur, bmodel.ds.acc2, bmodel.ds.dur2, bmodel.ds.acc6, bmodel.ds.dur6)) %>% 
+  rbind(df.bmodels)
+```
+
+# Save Results
+
+Log coefficients
+
+```{r}
+df.coefficients = df.bmodels %>% 
+  mutate(diagnostics = map(.x = fit, ~ brm_diagnostics(.x))) %>% 
+  unnest(diagnostics) %>% 
+  select(-fit)
+df.coefficients %>% 
+  write_tsv('../data/test_phase_coefficients.tsv')
+```

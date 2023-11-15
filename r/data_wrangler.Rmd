@@ -1,0 +1,315 @@
+---
+title: "manuscript"
+author: "Andrew"
+date: "12/17/2020"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_depth: 4
+    theme: cosmo
+    highlight: tango
+    pandoc_args: ["--number-offset=2"]
+---
+
+This file should be run after running ~/python/scripts/Data Wrangler.ipynb.
+It completes the remainder of data wrangling by adding statistical measure columns.
+
+```{r setup, include=FALSE}
+# these options here change the formatting of how comments are rendered
+knitr::opts_chunk$set(collapse = TRUE,
+                      comment = "#>",
+                      results = "hold",
+                      fig.show = "hold")
+
+# Clear any existing variables
+rm(list = ls())
+```
+
+```{r libraries, message=FALSE}
+library(broom.mixed)
+library(glue)
+library(lme4)
+library(brms)
+library(tidyverse)
+```
+
+
+# Load data
+
+```{r}
+df_subjects = read_tsv("../data/processed/pre_R/subjects.tsv")
+df_trials = read_tsv("../data/processed/pre_R/trials.tsv")
+df_puzzles = read_tsv("../data/processed/pre_R/puzzles.tsv")
+```
+
+# Last trial accuracy
+
+```{r}
+sigmoid = function(x) {
+  return (1 / (1 + exp(-x)))
+}
+
+df.p1 = df_trials %>% 
+  mutate(ltrial = log2(trial)) %>% 
+  filter(phase == 1)
+df.p2 = df_trials %>% 
+  mutate(ltrial = log2(trial)) %>% 
+  filter(phase == 2)
+
+model.p1.acc = brm(correct ~ ltrial + (ltrial | subject_id),
+                   family = 'bernoulli',
+                   data = df.p1,
+                   save_pars = save_pars(all=TRUE),
+                   control = list(max_treedepth = 20),
+                   seed = 0,
+                   iter = 4000,
+                   cores = 4,
+                   refresh = 0,
+                   file = 'brm/practice_phase/overall_acc')
+model.p2.acc = brm(correct ~ ltrial + (ltrial | subject_id),
+                   family = 'bernoulli',
+                   data = df.p2,
+                   save_pars = save_pars(all=TRUE),
+                   control = list(max_treedepth = 20),
+                   seed = 0,
+                   iter = 4000,
+                   cores = 4,
+                   refresh = 0,
+                   file = 'brm/test_phase/overall_acc')
+
+p1.last.acc = model.p1.acc %>% 
+  augment() %>% 
+  inner_join(df.p1, by = c('subject_id', 'ltrial')) %>% 
+  filter(trial == 25) %>% 
+  select(subject_id, p1_last_acc = .fitted)
+
+p2.last.acc = model.p2.acc %>% 
+  augment() %>% 
+  inner_join(df.p2, by = c('subject_id', 'ltrial')) %>% 
+  filter(trial == 64) %>% 
+  select(subject_id, p2_last_acc = .fitted)
+
+# Originally, subject_id was rearranged in descending order of last_acc according
+# to a standard glmer rather than the brm, so this is needed 
+p1.last.acc.freq = glmer(correct ~ ltrial + (ltrial | subject_id),
+                    family = "binomial",
+                    data = df.p1) %>%
+  broom.mixed::augment() %>% 
+  group_by(subject_id) %>% 
+  filter(ltrial == max(ltrial)) %>%
+  mutate(p1_last_acc_freq = sigmoid(.fitted)) %>% 
+  select(subject_id, p1_last_acc_freq) %>% 
+  ungroup()
+
+p1.last.acc = p1.last.acc %>% 
+  left_join(p1.last.acc.freq)
+```
+
+Print coefficients
+```{r}
+model.p1.acc %>% 
+  summary() %>% 
+  print(digits = 3)
+
+model.p2.acc %>% 
+  summary() %>% 
+  print(digits = 3)
+```
+
+```{r}
+model.p1.acc %>% 
+  summary()
+```
+
+```{r}
+model.p2.acc %>% 
+  summary()
+```
+
+# Overall accuracy
+```{r}
+accuracy = df_trials %>% 
+  group_by(subject_id, phase) %>% 
+  summarize(accuracy = mean(correct)) %>% 
+  pivot_wider(id_cols = subject_id,
+              names_from = phase,
+              names_glue = "p{phase}_{.value}",
+              values_from = accuracy)
+```
+
+# Non-modal digit responses
+```{r}
+p2.nonmd = df_trials %>% 
+  filter(phase == 2,
+         response_type != 'target',
+         response_type != 'distractor') %>% 
+  group_by(subject_id) %>% 
+  summarize(p2_non_md = n())
+```
+
+# Solved in last 8 trials of phase 2
+```{r}
+p2.last8solved = df_trials %>% 
+  filter(phase == 2,
+         trial > 56) %>% 
+  group_by(subject_id) %>% 
+  summarize(p2_last_8_solved = sum(correct))
+```
+
+# Combine data and save
+
+```{r}
+solver_boundary = .8 
+
+df_subjects = df_subjects %>% 
+  merge(accuracy, all.x = T) %>% 
+  merge(p1.last.acc, all.x = T) %>% 
+  merge(p2.last.acc, all.x = T) %>% 
+  merge(p2.nonmd, all.x = T) %>% 
+  merge(p2.last8solved, all.x = T) %>% 
+  arrange(desc(p1_last_acc_freq), desc(p2_accuracy), sid_hash) %>% 
+  mutate(subject_id_old = subject_id, # remap based on p1_last_acc
+         subject_id = 1:nrow(df_subjects),
+         solver = p1_last_acc >= solver_boundary,
+         excluded = is.na(tut_house),
+         p2_non_md = replace_na(p2_non_md, 0),
+         p2_last_8_solved = replace_na(p2_last_8_solved, 0),
+         q_puzzle_digit = replace_na(q_puzzle_digit, 0))
+
+sid_map = df_subjects %>% 
+  select(subject_id_old, subject_id)
+
+df_subjects = df_subjects %>% 
+  select(-subject_id_old) %>% 
+  select(subject_id, sid_hash, excluded, solver, p1_accuracy, p2_accuracy,
+         p1_last_acc, p2_last_acc, p2_non_md, p2_last_8_solved, everything()) %>% 
+  mutate(across(is.character, ~ str_replace_all(., '\n', '<>')))
+
+df_trials = df_trials %>% 
+  rename(subject_id_old = subject_id) %>% # remap based on p1_last_acc
+  merge(sid_map) %>% 
+  select(-subject_id_old) %>% 
+  select(subject_id, everything()) %>% 
+  arrange(subject_id, phase, trial)
+```
+
+```{r}
+df_subjects = df_subjects %>% 
+  mutate(across(is.character, ~ str_replace_all(., '\n', '<>')))
+```
+
+
+```{r}
+write_tsv(df_subjects, "../data/processed/subjects.tsv")
+write_tsv(df_trials, "../data/processed/trials.tsv")
+```
+
+# df_puzzles
+
+```{r}
+df_subjects = read_tsv("../data/processed/subjects.tsv")
+df_puzzles = read_tsv("../data/processed/pre_R/puzzles.tsv")
+
+df_puzzles = df_subjects %>% 
+  filter(!excluded) %>% 
+  select(subject_id, sid_hash) %>% 
+  left_join(df_puzzles %>% 
+              select(-subject_id)) %>% 
+  arrange(subject_id, phase, trial) %>% 
+  select(subject_id, sid_hash, phase, trial, key, type, row, column, number)
+
+df_puzzles %>% 
+  write_tsv("../data/processed/puzzles.tsv")
+```
+# df_house_types
+```{r}
+df_subjects = read_tsv("../data/processed/subjects.tsv")
+df_puzzles = read_tsv("../data/processed/puzzles.tsv")
+df_house_types = read_tsv("../data/processed/pre_R/house_types.tsv")
+
+df_house_types = df_house_types %>% 
+  select(-subject_id) %>% 
+  left_join(df_subjects %>% 
+               select(subject_id, sid_hash)) %>% 
+  select(subject_id, everything()) %>% 
+  arrange(subject_id, phase, trial)
+
+df_house_types %>% 
+  write_tsv("../data/processed/house_types.tsv")
+```
+
+
+
+# For questionnaire rating
+
+```{r}
+set.seed(1)
+
+df = df_subjects %>% 
+  filter(!solver,
+         p2_last_acc <= .6,
+         p2_non_md <= 6,
+         p2_last_8_solved >= 3,
+         p2_last_8_solved <= 5) 
+
+df = df_subjects %>% 
+  filter(solver,
+         p2_last_acc >= .8) %>% 
+  rbind(df) %>% 
+  mutate(subject_id = sample(1:nrow(.))) %>% 
+  arrange(subject_id) %>% 
+  mutate(correct = ifelse(q_puzzle == 'target', 'Correct', 'Incorrect')) 
+```
+
+## Pilot raters
+```{r}
+set.seed(2)
+
+df1 = df %>% 
+  filter(solver,
+         correct == 'Correct') %>% 
+  sample_n(9)
+
+df2 = df %>% 
+  filter(solver,
+         correct == 'Incorrect') %>% 
+  sample_n(1)
+
+df3 = df %>% 
+  filter(!solver,
+         correct == 'Correct') %>% 
+  sample_n(6)
+
+df4 = df %>% 
+  filter(!solver,
+         correct == 'Incorrect') %>% 
+  sample_n(4)
+
+qrater_pilot = df1 %>% 
+  rbind(df2) %>% 
+  rbind(df3) %>% 
+  rbind(df4) %>% 
+  mutate(subject_id = sample(1:nrow(.))) %>% 
+  arrange(subject_id) %>% 
+  select(subject_id, sid_hash, q_puzzle_digit, correct, q_strategy)
+```
+
+All participants
+```{r}
+qrater = df %>% 
+  select(subject_id, sid_hash, q_puzzle_digit, correct, q_strategy) %>%
+  filter(!(sid_hash %in% qrater_pilot$sid_hash)) %>% 
+  bind_rows(qrater_pilot, .) %>% 
+  mutate(subject_id = seq(1, nrow(.)))
+```
+
+Save files
+```{r}
+# Don't overwrite. Somehow, the order of subjects got changed, so won't be consistent
+# with the files that the raters saw.
+
+# qrater_pilot %>% 
+#   write_tsv("../data/processed/qrater_pilot.tsv")
+# qrater %>% 
+#   write_tsv("../data/processed/qrater.tsv")
+```

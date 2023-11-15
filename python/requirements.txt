@@ -1,0 +1,16 @@
+numpy
+pandas
+tqdm
+scikit-learn
+matplotlib
+ipython
+jupyterlab
+ipywidgets
+omegaconf
+frozendict
+flask
+flask_restful
+flask_cors
+torch
+jsonpickle
+einops

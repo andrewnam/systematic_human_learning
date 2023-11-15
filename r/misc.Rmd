@@ -1,0 +1,104 @@
+---
+title: "Misc"
+author: "Andrew"
+date: "12/17/2020"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_depth: 4
+    theme: cosmo
+    highlight: tango
+    pandoc_args: ["--number-offset=2"]
+---
+
+# Initialization
+
+```{r setup, include=FALSE}
+# these options here change the formatting of how comments are rendered
+knitr::opts_chunk$set(collapse = TRUE,
+                      comment = "#>",
+                      results = "hold",
+                      fig.show = "hold")
+
+# Clear any existing variables
+rm(list = ls())
+```
+
+```{r libraries, message=FALSE}
+library(ggExtra)
+library(glue)
+library(tidyverse)
+```
+
+```{r}
+# Set ggplot theme
+theme_set(theme_light() +
+            theme(plot.title = element_text(hjust = 0.5)))
+```
+
+# Load data
+
+```{r}
+df_subjects = read_tsv("../data/processed/subjects.tsv")
+```
+
+# Solvers vs non-solvers
+
+## Histograms
+
+```{r}
+df_subjects %>% 
+  filter(!excluded) %>%
+  mutate(Group = ifelse(solver, "Solver", "Non-Solver")) %>% 
+  ggplot(aes(x = p1_accuracy, color = Group, fill = Group)) +
+  geom_histogram(alpha = .2, position = 'identity') +
+  labs(x = "Practice Phase Accuracy",
+       y = "Count") +
+  ggsave(glue("../figures/misc/practice_phase_accuracy.png"), width=8, height=4.5)
+```
+
+```{r}
+df_subjects %>% 
+  filter(!excluded) %>%
+  mutate(Group = ifelse(solver, "Solver", "Non-Solver")) %>% 
+  ggplot(aes(x = p2_accuracy, color = Group, fill = Group)) +
+  geom_histogram(alpha = .2, position = 'identity') +
+  labs(x = "Test Phase Accuracy",
+       y = "Count") +
+  ggsave(glue("../figures/misc/test_phase_accuracy.png"), width=8, height=4.5)
+```
+
+## Group accuracy plot
+
+```{r}
+p = df_subjects %>% 
+  filter(!excluded) %>%
+  mutate(Group = ifelse(solver, "Solver", "Non-Solver")) %>% 
+  ggplot(aes(x = p1_accuracy, y = p2_accuracy, color = Group)) +
+  geom_count(alpha = .6,
+             stroke = 0) +
+  scale_size(range = c(1, 4), "N") +
+  coord_fixed(ratio = 1) +
+  labs(x = "Practice Phase Accuracy",
+       y = "Test Phase Accuracy") +
+  theme(legend.position="bottom") 
+p = ggMarginal(p,
+               type="histogram",
+               groupFill = T,
+               groupColour = T,
+               alpha = .5,
+               position = 'identity',
+               stat = "bin",
+               xparams = list(size = 0.1),
+               yparams = list(size = 0.1))
+ggsave(glue("../figures/misc/group_accuracy.png"), plot = p)
+```
+
+## EM
+
+```{r}
+df_subjects %>% 
+  filter(!excluded) %>% 
+  rename(score = p2_last_acc) 
+```
+

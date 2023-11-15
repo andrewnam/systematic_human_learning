@@ -1,0 +1,94 @@
+---
+title: "llm"
+author: "Andrew Nam"
+date: "3/13/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Disable this warning
+options(dplyr.summarise.inform = FALSE)
+
+# Clear any existing variables
+rm(list = ls())
+
+library(janitor)
+library(tidyverse)
+
+theme_set(theme_light() +
+            theme(plot.title = element_text(hjust = 0.5)))
+```
+
+
+# Load Data
+
+```{r}
+df_data = read_tsv("../data/llm/text-davinci-003/hidden_single_list.tsv") %>% 
+  mutate(format = 'list',
+         k = 1,
+         explanation = NA) %>% 
+  select(format, k, explanation, puzzle_id, r_parsed, correct)
+
+df_data = read_tsv("../data/llm/text-davinci-003/hidden_single_array.tsv") %>%
+  mutate(format = 'array',
+         k = 1,
+         explanation = NA) %>% 
+  select(format, k, explanation, puzzle_id, r_parsed, correct) %>% 
+  rbind(df_data)
+
+df_data = read_tsv("../data/llm/text-davinci-003/hidden_single_k4_list.tsv") %>% 
+  mutate(format = 'list',
+         k = 4,
+         explanation = NA) %>%
+  select(format, k, explanation, puzzle_id = pid_target, r_parsed, correct) %>% 
+  rbind(df_data)
+
+df_data = read_tsv("../data/llm/text-davinci-003/hidden_single_k4_array.tsv") %>% 
+  mutate(format = 'array',
+         k = 4,
+         explanation = NA) %>%
+  select(format, k, explanation, puzzle_id = pid_target, r_parsed, correct) %>% 
+  rbind(df_data)
+
+df_data = read_tsv("../data/llm/text-davinci-003/hidden_single_expk4_list.tsv") %>% 
+  mutate(format = 'list',
+         k = 4,
+         explanation = 'positive') %>%
+  select(format, k, explanation, puzzle_id = pid_target, r_parsed, correct) %>% 
+  rbind(df_data)
+
+df_data = read_tsv("../data/llm/text-davinci-003/hidden_single_expk4_list_mix.tsv") %>% 
+  mutate(format = 'list',
+         k = 4,
+         explanation = 'mix') %>%
+  select(format, k, explanation, puzzle_id = pid_target, r_parsed, correct) %>% 
+  rbind(df_data)
+
+# df_data = read_tsv("../data/llm/text-davinci-003/hidden_single_expk4_array_mix.tsv") %>% 
+#   mutate(format = 'array',
+#          k = 4,
+#          explanation = 'mix') %>%
+#   select(format, k, explanation, puzzle_id = pid_target, r_parsed, correct) %>% 
+#   rbind(df_data)
+
+df_data = read_tsv("../data/llm/text-davinci-003/hidden_single_expk4_list_shortcut.tsv") %>% 
+  mutate(format = 'list',
+         k = 4,
+         explanation = 'shortcut') %>%
+  select(format, k, explanation, puzzle_id = pid_target, r_parsed, correct) %>% 
+  rbind(df_data)
+
+df_data %>% 
+  group_by(format, k, explanation) %>% 
+  summarize(accuracy = mean(correct))
+```
+
+```{r}
+df_data %>% 
+  filter(!is.na(explanation)) %>% 
+  ggplot(aes(x = explanation, y = as.numeric(correct))) +
+  stat_summary()
+```
+

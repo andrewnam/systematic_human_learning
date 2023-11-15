@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<!-- 
+  The consent.html displays the text of your IRB-approved
+  consent form.  Even if you are not required to provide
+  a consent form, it is helpful to use this form to 
+  describe what people can do if an error comes up, etc...
+
+-->
+<script src="//uniqueturker.myleott.com/lib.js" type="text/javascript"></script>
+<script type="text/javascript">
+  (function(){
+    var ut_id = "dd7502cef4a1d4587f3e94469eeb11e0";
+    if (UTWorkerLimitReached(ut_id)) {
+      document.getElementById('mturk_form').style.display = 'none';
+      document.getElementsByTagName('body')[0].innerHTML = "You have already completed the maximum number of HITs allowed by this requester. Please click 'Return HIT' to avoid any impact on your approval rating.";
+    }
+  })();
+</script>
+
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Psychology Experiment - A Study in Extensible Algorithmic Thinking</title>
+        <link rel="stylesheet" href="/static/css/bootstrap.min.css" type="text/css" />
+        <link rel="stylesheet" href="/static/css/style.css" type="text/css" />
+        <script type="text/javascript">
+            function onexit() {
+              self.close(); // no harm, no foul here
+            }
+        </script>
+    </head>
+    <body>
+        <div id="container-consent">
+            <div id="consent">
+                <h1>We need your consent to proceed</h1>
+                <hr />
+                <div class="legal well">
+                    <p>
+                        You have been invited to take part in a research study named
+                        A Study in Extensible Algorithmic Thinking.
+                    </p>
+                    <p>
+                        Higher accuracy
+                        and speed on the task will be rewarded with bonuses while demonstrable lack of effort will result
+                        in reduced compensation. Please progress through the tasks as quickly as possible while avoiding
+                        mistakes for maximum compensation.
+                    </p>
+                    <p>
+                        Please note that the HIT is still under development and may not fully function as intended.
+                    </p>
+                    <button type="button" class="btn btn-default btn-sm" onClick="window.print();">
+                    <span class="glyphicon glyphicon-print"></span> Print a copy of this
+                    </button>
+                </div>
+
+                <hr />
+                <h4>Do you understand and consent to these terms?</h4>
+                <br />
+
+                <center>
+                    <button type="button" class="btn btn-primary btn-lg" onClick="window.location='/exp?hitId={{ hitid }}&assignmentId={{ assignmentid }}&workerId={{ workerid }}'">
+                    <span class="glyphicon glyphicon-ok"></span> I agree 
+                    </button>
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+                    <button type="button" class="btn btn-danger btn-lg" onClick="onexit()">
+                    <span class="glyphicon glyphicon-ban-circle"></span> No thanks, I do not want to do this HIT
+                    </button>
+                </center>
+            </div>
+        </div>
+    </body>
+</html>
+

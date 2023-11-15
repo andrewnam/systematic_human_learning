@@ -1,0 +1,1644 @@
+---
+title: "questionnaire"
+author: "Andrew"
+date: "01/26/2021"
+output:
+  pdf_document:
+    number_sections: true
+---
+
+This file analyzes questionnaire ratings data.
+
+# Setup
+
+```{r setup, include=FALSE}
+# these options here change the formatting of how comments are rendered
+knitr::opts_chunk$set(collapse = TRUE,
+                      comment = "#>",
+                      results = "hold",
+                      fig.show = "hold")
+
+# Disable this warning
+options(dplyr.summarise.inform = FALSE)
+
+# Clear any existing variables
+rm(list = ls())
+```
+
+```{r libraries, echo=F, message=FALSE}
+library(lme4)
+library(glue)
+library(broom.mixed)
+library(brms)
+library(lmerTest)
+library(ggpubr)
+
+library(corrplot)
+# library(BayesianFirstAid)
+library(ggdist)
+library(stringr)
+library(tidyverse)
+library(cowplot)
+
+library(tidybayes)
+library(modelr)
+library(ggdist)
+library(emmeans)
+library(moderndive)
+library(gghalves)
+library(scales) # to access break formatting functions
+
+source("functions.R")
+```
+
+```{r plot_theme, echo=F}
+# Set ggplot theme
+theme_set(theme_light() +
+            theme(plot.title = element_text(hjust = 0.5)))
+```
+
+## Definitions
+```{r}
+strategy_names = c('Uniform Guess',
+                   'Avoid Direct Contradictions',
+                   'Prevalent Digits',
+                   'Successful')
+```
+
+
+# Load data
+
+```{r load_data, echo=F, message=F, warning=F}
+df_subjects = read_tsv("../data/processed/subjects.tsv")
+df.results = read_tsv("../data/processed/trials.tsv")
+df.qratings1 = read_tsv("../data/qratings/rater1.tsv", quote = "") %>% 
+  mutate(rater = 'rater1')
+df.qratings2 = read_tsv("../data/qratings/rater2.tsv", quote = "") %>%
+  mutate(rater = 'rater2')
+
+df_micro_strategies = read_tsv(glue("../data/hmm/solvers/micro_p_strategy.tsv")) %>% 
+  mutate(trial = trial + 1,
+         strategy = factor(strategy_names[strategy + 1],
+                           strategy_names),
+         probability = ifelse(probability > 0, probability, 0),
+         probability = ifelse(probability < 1, probability, 1))
+```
+
+## Wrangle data
+
+```{r}
+df_questionnaire = df.qratings1 %>% 
+  rbind(df.qratings2) %>% 
+  mutate(correct = correct == 'Correct',
+         rater_eval_correct = Evaluation == 'Correct') %>% 
+  select(sid_hash, rater, correct, rater_eval_correct,
+         pd = PD, aware_error = AoE,
+         basis = `Basis for Choice`,
+         basis2 = `Second Choice`,
+         notes = `Additional Notes`,
+         response = Response) %>% 
+  mutate(across(is.character, ~ str_replace_all(., '\n', '<>'))) %>% 
+  left_join(df_subjects %>% 
+              select(subject_id, sid_hash)) %>% 
+  select(subject_id, everything(), -sid_hash)
+```
+
+
+```{r wrangle, echo=F}
+categories = c('V1', 'V2', 'V3', 'U1', 'U2', 'I1', 'I2', 'I3', 'M', 'O')
+
+df.qratings = df.qratings1 %>% 
+  bind_rows(df.qratings2) %>% 
+  select(qid = `Subject ID`,
+         sid_hash,
+         rater,
+         correct_eval = Evaluation,
+         correct_actual = Actual,
+         pd = PD,
+         aoe = AoE,
+         basis = `Basis for Choice`,
+         basis2 = `Second Choice`,
+         notes = `Additional Notes`) %>% 
+  replace_na(list(basis2 = 'K')) %>% 
+  mutate(correct_eval = correct_eval == 'Correct',
+         correct_actual = correct_actual == 'Correct',
+         pd = ifelse(pd == 'Vague or uncertain', 'Uncertain', pd),
+         pd = factor(pd, levels = c('Both',
+                                    'Target',
+                                    'Distractor',
+                                    'Neither',
+                                    'Uncertain')),
+         aoe = aoe == 'Yes with explanation',
+         basis = substring(basis, 0, 1),
+         basis2 = substring(basis2, 0, 1),
+         basis = case_when(basis == 'A' ~ 'V1',
+                           basis == 'B' ~ 'V2',
+                           basis == 'C' ~ 'V3',
+                           basis == 'D' ~ 'U1',
+                           basis == 'E' ~ 'I1',
+                           basis == 'F' ~ 'I2',
+                           basis == 'G' ~ 'I3',
+                           basis == 'H' ~ 'U2',
+                           basis == 'I' ~ 'M',
+                           TRUE ~ 'X'),
+         basis2 = case_when(basis2 == 'A' ~ 'V1',
+                            basis2 == 'B' ~ 'V2',
+                            basis2 == 'C' ~ 'V3',
+                            basis2 == 'D' ~ 'U1',
+                            basis2 == 'E' ~ 'I1',
+                            basis2 == 'F' ~ 'I2',
+                            basis2 == 'G' ~ 'I3',
+                            basis2 == 'H' ~ 'U2',
+                            basis2 == 'I' ~ 'M',
+                            TRUE ~ 'X'),
+         basis = factor(basis, categories),
+         basis2 = factor(basis2, categories),
+         valid_basis = basis %in% c("V1", "V2", "V3"))
+
+df_data = df_subjects %>% 
+  right_join(df.qratings, by = "sid_hash") %>% 
+  mutate(solver = ifelse(solver, "Persistent Solver", "PD Guesser") %>% 
+           factor(levels = c('Persistent Solver', 'PD Guesser')),
+         num_math = rowSums(across(starts_with('m_'))),
+         edu_level = factor(education,
+                            levels = c('no_hs',
+                                       'hs',
+                                       'asso',
+                                       'bach',
+                                       'mast',
+                                       'prof',
+                                       'phd'),
+                            labels = c('HS\nIncomplete',
+                                       'High\nSchool',
+                                       "Associate's",
+                                       "Bachelor's",
+                                       "Master's",
+                                       'Professional',
+                                       'Doctoral')),
+         education = recode(education,
+                            phd = 21,
+                            prof = 20,
+                            mast = 18,
+                            bach = 16,
+                            asso = 14,
+                            hs = 12,
+                            no_hs = 10))
+```
+
+### df_qratings
+```{r}
+df_qratings = df_data %>% 
+  mutate(correct = q_puzzle == 'target',
+         solver = solver == 'Persistent Solver',
+         sub_basis = basis,
+         basis = str_sub(basis, 1, 1),
+         basis = case_when(basis == 'V' ~ 'Valid',
+                           basis == 'U' ~ 'Unclear',
+                           basis == 'I' ~ 'Invalid',
+                           T ~ 'Missing') %>% 
+           factor(c('Valid', 'Unclear', 'Invalid', 'Missing'))) %>% 
+  select(subject_id, qid, solver, rater, correct_eval, correct_actual, 
+         pd, aware_error = aoe, valid_basis, basis, sub_basis, 
+         notes, response = q_strategy) %>% 
+  mutate(across(is.character, ~ str_replace_all(., '\n', '<>'))) %>% 
+  write_tsv("../data/processed/qratings.tsv")
+```
+
+
+### df_transitions
+```{r}
+df_transitions = df_micro_strategies %>% 
+  complete(subject_id, trial, strategy, fill = list(probability = 0)) %>%
+  arrange(subject_id, trial, desc(strategy)) %>% 
+  group_by(subject_id, trial) %>% 
+  mutate(probability = cumsum(probability)) %>% 
+  filter(probability >= .5) %>% 
+  slice(1) %>%
+  group_by(subject_id, strategy) %>% 
+  summarize(xtrial = min(trial)) %>% 
+  ungroup()
+```
+
+### df_summary
+```{r}
+df_summary = df_data %>% 
+  select(subject_id, solver, p1_accuracy, p2_accuracy, gender, age,
+         education, num_math, m_alg, m_geom, q_strategy, rater, valid_basis) %>% 
+  pivot_wider(names_from = rater,
+              values_from = valid_basis) %>% 
+  mutate(q_strategy = str_replace_all(q_strategy, '\n', '__'),
+         qrating_score = rater1 + rater2) %>% 
+  select(-rater1, -rater2) %>% 
+  write_tsv('../data/qratings/summary.tsv')
+```
+
+
+# Explanation and education
+
+```{r}
+df_summary %>% 
+  filter(solver == 'Persistent Solver') %>% 
+  glm(p2_accuracy ~ qrating_score + education + num_math,
+      family = 'binomial',
+      data = .) %>% 
+  summary()
+```
+
+```{r}
+
+df_summary %>% 
+  filter(solver == 'Persistent Solver') %>% 
+  lm(qrating_score ~ p2_accuracy + education + num_math,
+     data = .) %>% 
+  summary()
+```
+
+```{r}
+df_summary %>% 
+  filter(solver == 'Persistent Solver') %>% 
+  mutate(qrating_score = as.factor(qrating_score)) %>% 
+  ggplot(aes(x = qrating_score, y = p2_accuracy, fill = qrating_score)) +
+  stat_summary(geom = 'bar') +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "linerange")
+```
+
+## PCA
+
+```{r}
+df = df_summary %>% 
+  filter(solver == 'Persistent Solver') %>% 
+  select(p2_accuracy, education, num_math, qrating_score) 
+
+pca = df%>% 
+  prcomp(scale = TRUE) 
+
+pca %>% 
+  tidy(matrix = 'eigenvalues')
+```
+
+```{r}
+pca %>% 
+  augment(df) %>% 
+  mutate(qrating_score = as.factor(qrating_score)) %>%
+  ggplot(aes(.fittedPC1, .fittedPC2, color = num_math)) +
+  geom_point() +
+  scale_colour_gradient(low = 'red', high = 'green')
+ggsave("../temp/num_math.png")
+```
+
+```{r}
+df %>% 
+  cor() %>% 
+  corrplot( method = 'ellipse', order = 'AOE', addCoef.col = 'black', tl.pos = 'd',
+            cl.pos = 'n', col = COL2('BrBG'))
+```
+
+
+# FRQ validity
+
+```{r}
+df_valid = df_data %>% 
+  filter(!excluded,
+         solver == 'Persistent Solver',
+         q_puzzle == 'target') %>% 
+  mutate(valid = str_sub(basis, 1, 1) == 'V') %>%
+  select(subject_id, rater, valid) %>% 
+  group_by(subject_id) %>%
+  summarize(valid = ifelse(all(valid), 'Valid', 'Unclear') %>% 
+              factor(c('Valid', 'Unclear'))) %>%
+  ungroup() %>% 
+  left_join(df.results) %>% 
+  select(subject_id, valid, phase, trial, house_type, correct, duration)
+
+df_valid %>% 
+  select(subject_id, valid) %>% 
+  distinct() %>% 
+  group_by(valid) %>% 
+  summarize(n = n())
+```
+
+## Plots
+
+```{r}
+valid_group = 'Valid'
+# valid_group = 'Unclear'
+df = df_valid %>% 
+  filter(valid == valid_group) %>% 
+  group_by(subject_id, phase) %>% 
+  summarize(accuracy = mean(correct)) %>% 
+  group_by(accuracy, phase) %>%
+  mutate(
+    phase = ifelse(phase == 1, 'Practice', 'Test') %>% 
+      factor())
+plot = ggplot(df, mapping = aes(x = accuracy, fill = phase)) +
+  geom_histogram(aes(y= ..count.. / sum(..count..)),
+                 data = df %>% 
+                   filter(phase == 'Practice'),
+                 boundary = 1,
+                 binwidth = .04) +
+  geom_histogram(aes(y= -..count.. / sum(..count..)),
+                 data = df %>% 
+                   filter(phase == 'Test'),
+                 boundary = 1,
+                 binwidth = .04) +
+  scale_fill_discrete(name="") +
+  coord_cartesian(xlim = c(.6, 1),
+                  ylim = c(-.6, .3)) +
+  scale_y_continuous(labels = function(x) scales::percent(abs(x))) +
+  scale_x_continuous(breaks = seq(.6, 1, .08),
+                     labels = scales::percent) +
+  labs(x = 'Accuracy',
+       y = 'Proportion of Solvers') +
+  theme(legend.position = 'bottom')
+
+legend = get_legend(plot) %>% 
+  as_ggplot()
+ggsave(glue("../figures/questionnaire/legend_validity.png"), width = 6, height = .3,
+       bg = 'white')
+
+plot + rremove('legend')
+ggsave(glue("../figures/questionnaire/accuracy_{valid_group}.png"), width = 4, height = 3)
+```
+
+```{r}
+valid_group = 'Valid'
+valid_group = 'Unclear'
+df = df_valid %>% 
+  mutate(duration = log2(1 + duration)) %>%
+  filter(subject_id != 42,
+         valid == valid_group) %>% 
+  group_by(subject_id, phase) %>% 
+  summarize(duration = mean(duration)) %>% 
+  ungroup() %>% 
+  mutate(phase = ifelse(phase == 1, 'Practice', 'Test') %>% 
+           factor())
+ggplot(df, mapping = aes(x = duration, fill = phase)) +
+  geom_histogram(aes(y= ..count.. / sum(..count..)),
+                 data = df %>% 
+                   filter(phase == 'Practice'),
+                 binwidth = log2(60)/ 20) +
+  geom_histogram(aes(y= -..count.. / sum(..count..)),
+                 data = df %>% 
+                   filter(phase == 'Test'),
+                 binwidth = log2(60)/ 20) +
+  coord_cartesian(xlim = log2(c(4, 70)),
+                  ylim = c(-.45, .3)) +
+  scale_y_continuous(labels = function(x) scales::percent(abs(x))) +
+  scale_x_continuous(breaks = log2(seq(5, 70, 15)),
+                     labels = seq(5, 70, 15)) +
+  labs(x = 'Response Time',
+       y = 'Proportion of Solvers') +
+  theme(legend.position = 'none')
+ggsave(glue("../figures/questionnaire/duration_{valid_group}.png"), width = 4, height = 3)
+```
+
+
+##Effect on learning rate
+
+
+```{r}
+df = df_valid %>% 
+  select(subject_id, valid) %>% 
+  distinct() %>% 
+  left_join(df_transitions) %>% 
+  filter(strategy == 'Successful')
+
+df = df_micro_strategies %>% 
+  filter(strategy == 'Successful',
+         probability >= .57) %>% 
+  group_by(subject_id) %>% 
+  filter(trial == min(trial)) %>% 
+  ungroup() %>%
+  select(subject_id, trial) %>% 
+  right_join(df_valid %>% 
+               select(subject_id, valid) %>% 
+               distinct())
+
+brm_valid_transition = brm(xtrial ~ valid,
+                           cores = 4,
+                           seed = 0,
+                           file = 'brm/questionnaire/brm_valid_transition',
+                           file_refit = "on_change",
+                           data = df)
+
+brm_valid_transition %>% 
+  summary()
+```
+
+### D-prime
+```{r}
+group_sd = df %>% 
+  summarize(sd = sd(xtrial)) %>% 
+  pull(sd)
+
+df %>% 
+  group_by(valid) %>% 
+  summarize(mean = mean(xtrial)) %>% 
+  pivot_wider(names_from = valid, values_from = mean) %>% 
+  mutate(diff = Valid - Unclear,
+         d = diff / group_sd)
+```
+
+
+### Plot 
+```{r}
+df %>% 
+  group_by(valid, xtrial) %>% 
+  # filter(xtrial <= 6) %>% 
+  summarize(n = n()) %>% 
+  mutate(f = n / sum(n),
+         f = ifelse(valid == 'Valid', f, -f)) %>% 
+  ggplot(aes(x = xtrial, y = f, fill = valid)) +
+  geom_bar(stat = 'identity') +
+  scale_y_continuous(labels = ~ scales::percent(abs(.))) +
+  labs(x = 'Trial', y = '% of Participants') +
+  guides(fill = guide_legend(title = NULL))
+
+ggsave("../figures/questionnaire/transition_trial.png", width = 6, height = 4)
+```
+
+
+## Practice phase: P(strategy)
+
+```{r}
+df_micro_strategies %>% 
+  filter(strategy == 'Successful') %>% 
+  right_join(df_valid %>% 
+               filter(phase == 1)) %>% 
+  ggplot(aes(x = trial, y = probability, color = valid)) +
+  stat_summary(aes(fill = valid),
+               fun.data = mean_cl_boot,
+               geom = "ribbon",
+               alpha = 0.2,
+               linetype = 0) +
+  stat_summary(fun = 'mean',
+               geom = 'line') +
+  stat_summary(fun = 'mean',
+               geom = 'point',
+               size = 1.2) +
+  scale_y_continuous(labels = percent) +
+  labs(x = 'Trial',
+       y = 'P(Successful)') +
+  theme(legend.title = element_blank())
+ggsave("../figures/questionnaire/solvers_p_strategy.png",
+       width = 6, height = 4)
+```
+
+## Accuracy
+
+### Models
+```{r}
+brm_valid_acc_p1 = df_valid %>% 
+  filter(phase == 1) %>% 
+  mutate(trial = log2(trial)) %>% 
+  brm(correct ~ valid + trial + (1 | subject_id),
+      family = 'bernoulli',
+      cores = 4,
+      seed = 0,
+      file = 'brm/questionnaire/valid_acc_p1',
+      file_refit = "on_change",
+      data = .)
+
+brm_valid_acc_p2 = df_valid %>% 
+  filter(phase == 2) %>% 
+  mutate(trial = log2(trial)) %>% 
+  brm(correct ~ valid + trial + (1 | subject_id),
+      family = 'bernoulli',
+      cores = 4,
+      seed = 0,
+      file = 'brm/questionnaire/valid_acc_p2',
+      file_refit = "on_change",
+      data = .)
+```
+
+```{r}
+brm_valid_acc_p1 %>% 
+  tidy() %>% 
+  filter(effect == 'fixed') %>% 
+  select(term, estimate, std.error, conf.low, conf.high) %>% 
+  mutate(across(is.numeric, ~round(.x, 3)))
+
+brm_valid_acc_p2 %>% 
+  tidy() %>% 
+  filter(effect == 'fixed') %>% 
+  select(term, estimate, std.error, conf.low, conf.high) %>% 
+  mutate(across(is.numeric, ~round(.x, 3)))
+```
+
+### Plot
+
+Get model posteriors
+WARNING: this part runs slowly
+
+```{r}
+df_model = df_valid %>% 
+  filter(phase == 1) %>% 
+  mutate(trial = log2(trial)) %>% 
+  data_grid(valid, trial, subject_id) %>% 
+  add_predicted_draws(brm_valid_acc_p1) %>% 
+  group_by(valid, trial, .draw) %>% 
+  summarize(accuracy = mean(.prediction)) %>% 
+  group_by(valid, trial) %>% 
+  summarize(mean = mean(accuracy),
+            low2 = quantile(accuracy, .025),
+            low1 = quantile(accuracy, .16),
+            high1 = quantile(accuracy, .84),
+            high2 = quantile(accuracy, .975)) %>% 
+  mutate(phase = 1)
+
+df_model = df_valid %>% 
+  filter(phase == 2) %>% 
+  mutate(trial = log2(trial)) %>% 
+  data_grid(valid, trial, subject_id) %>% 
+  add_predicted_draws(brm_valid_acc_p2) %>% 
+  group_by(valid, trial, .draw) %>% 
+  summarize(accuracy = mean(.prediction)) %>% 
+  group_by(valid, trial) %>% 
+  summarize(mean = mean(accuracy),
+            low2 = quantile(accuracy, .025),
+            low1 = quantile(accuracy, .16),
+            high1 = quantile(accuracy, .84),
+            high2 = quantile(accuracy, .975)) %>% 
+  mutate(phase = 2) %>% 
+  rbind(df_model, .)
+```
+
+```{r}
+df_valid %>% 
+  filter(phase == 2) %>% 
+  mutate(correct = as.numeric(correct),
+         phase = ifelse(phase == 1, 'Practice', 'Test'),
+         trial = log2(trial)) %>% 
+  ggplot(aes(x = trial)) +
+  # facet_wrap(~phase, scales = 'free') +
+  stat_summary(aes(y = correct, color = valid),
+               fun = 'mean',
+               geom = 'point',
+               alpha = .5,
+               shape = 20,
+               size = 1.6) +
+  # geom_ribbon(aes(ymin = low2, ymax = high2, fill = valid), 
+  #             data = df_model %>% 
+  #               mutate(phase = ifelse(phase == 1, 'Practice', 'Test')),
+  #             alpha = .3) +
+  geom_line(aes(y = mean, color = valid),
+            data = df_model %>% 
+              filter(phase == 2) %>% 
+              mutate(phase = ifelse(phase == 1, 'Practice', 'Test'))) +
+  scale_x_continuous(breaks = 0:6,
+                     labels = 2^(0:6),
+                     minor_breaks = log2(1.5 * 2^(1:5))) +
+  scale_y_continuous(labels = percent) +
+  coord_cartesian(ylim = c(.5, 1), clip = 'off') +
+  scale_color_hue(direction = -1) +
+  scale_fill_hue(direction = -1) +
+  labs(x = 'Trial',
+       y = 'Accuracy') +
+  theme(legend.title = element_blank())
+# theme(legend.title = element_blank(),
+#       legend.position = 'bottom')
+ggsave("../figures/questionnaire/solvers_accuracy_p2.png",
+       width = 5, height = 3, scale=1.5)
+```
+
+
+## Response Time
+
+### Models
+```{r}
+brm_valid_rt_p1 = df_valid %>% 
+  filter(phase == 1,
+         correct) %>% 
+  mutate(trial = log2(trial),
+         duration = log2(duration)) %>% 
+  brm(duration ~ valid + trial + (1 | subject_id),
+      iter = 5000,
+      cores = 4,
+      seed = 0,
+      file = 'brm/questionnaire/valid_rt_p1',
+      file_refit = "on_change",
+      data = .)
+
+brm_valid_rt_p2 = df_valid %>% 
+  filter(phase == 2,
+         correct) %>% 
+  mutate(trial = log2(trial),
+         duration = log2(duration)) %>% 
+  brm(duration ~ valid + trial + (1 | subject_id),
+      iter = 8000,
+      cores = 4,
+      seed = 0,
+      file = 'brm/questionnaire/valid_rt_p2',
+      file_refit = "on_change",
+      data = .)
+```
+
+```{r}
+brm_valid_rt_p1 %>% 
+  tidy() %>% 
+  filter(effect == 'fixed') %>% 
+  select(term, estimate, std.error, conf.low, conf.high) %>% 
+  mutate(across(is.numeric, ~2^round(.x, 3)))
+
+brm_valid_rt_p2 %>% 
+  tidy() %>% 
+  filter(effect == 'fixed') %>% 
+  select(term, estimate, std.error, conf.low, conf.high) %>% 
+  mutate(across(is.numeric, ~ 2^round(.x, 3)))
+```
+
+### Plot
+
+WARNING: this part runs slowly
+```{r}
+df_model = df_valid %>% 
+  filter(phase == 1) %>% 
+  mutate(trial = log2(trial)) %>% 
+  data_grid(valid, trial, subject_id) %>% 
+  add_predicted_draws(brm_valid_rt_p1) %>% 
+  group_by(valid, trial, .draw) %>% 
+  summarize(prediction = mean(.prediction)) %>% 
+  group_by(valid, trial) %>% 
+  summarize(mean = mean(prediction),
+            low2 = quantile(prediction, .025),
+            low1 = quantile(prediction, .16),
+            high1 = quantile(prediction, .84),
+            high2 = quantile(prediction, .975)) %>% 
+  mutate(phase = 1)
+
+df_model = df_valid %>% 
+  filter(phase == 2) %>% 
+  mutate(trial = log2(trial)) %>% 
+  data_grid(valid, trial, subject_id) %>% 
+  add_predicted_draws(brm_valid_rt_p2) %>% 
+  group_by(valid, trial, .draw) %>% 
+  summarize(prediction = mean(.prediction)) %>% 
+  group_by(valid, trial) %>% 
+  summarize(mean = mean(prediction),
+            low2 = quantile(prediction, .025),
+            low1 = quantile(prediction, .16),
+            high1 = quantile(prediction, .84),
+            high2 = quantile(prediction, .975)) %>% 
+  mutate(phase = 2) %>% 
+  rbind(df_model, .)
+```
+
+
+```{r}
+df_valid %>% 
+  mutate(duration = log2(duration),
+         phase = ifelse(phase == 1, 'Practice', 'Test'),
+         trial = log2(trial)) %>% 
+  ggplot(aes(x = trial)) +
+  facet_wrap(~phase, scales = 'free') +
+  stat_summary(aes(y = duration, color = valid),
+               fun = 'mean',
+               geom = 'point',
+               alpha = .5,
+               shape = 20,
+               size = 1.6) +
+  geom_ribbon(aes(ymin = low2, ymax = high2, fill = valid), 
+              data = df_model %>% 
+                mutate(phase = ifelse(phase == 1, 'Practice', 'Test')),
+              alpha = .3) +
+  geom_line(aes(y = mean, color = valid),
+            data = df_model %>% 
+              mutate(phase = ifelse(phase == 1, 'Practice', 'Test'))) +
+  scale_x_continuous(breaks = 0:6,
+                     labels = 2^(0:6),
+                     minor_breaks = log2(1.5 * 2^(1:5))) +
+  scale_y_continuous(breaks = log2(seq(10, 60, 10)),
+                     labels = seq(10, 60, 10),
+                     minor_breaks = log2(seq(5, 60, 5))) +
+  scale_color_hue(direction = -1) +
+  scale_fill_hue(direction = -1) +
+  labs(x = 'Trial',
+       y = 'Response Time (seconds)') +
+  theme(legend.title = element_blank(),
+        legend.position = 'bottom')
+ggsave("../figures/questionnaire/solvers_rt.png",
+       width = 8, height = 4)
+```
+
+
+## Test phase: house type
+
+### Models
+
+```{r}
+brm_valid_acc_ht = df_valid %>% 
+  filter(phase == 2) %>% 
+  mutate(trial = log2(trial)) %>% 
+  brm(correct ~ valid*house_type + trial + (1 | subject_id),
+      family = 'bernoulli',
+      cores = 4,
+      seed = 0,
+      file = 'brm/questionnaire/valid_acc_ht',
+      file_refit = "on_change",
+      data = .)
+
+brm_valid_rt_ht = df_valid %>% 
+  filter(phase == 2,
+         correct) %>% 
+  mutate(trial = log2(trial),
+         duration = log2(duration)) %>% 
+  brm(duration ~ valid*house_type + trial + (1 | subject_id),
+      iter = 8000,
+      cores = 4,
+      seed = 0,
+      file = 'brm/questionnaire/valid_rt_ht',
+      file_refit = "on_change",
+      data = .)
+
+brm_valid_acc_ht16 = df_valid %>% 
+  filter(phase == 2,
+         trial <= 16) %>% 
+  mutate(trial = log2(trial)) %>% 
+  brm(correct ~ valid*house_type + trial + (1 | subject_id),
+      family = 'bernoulli',
+      cores = 4,
+      seed = 0,
+      file = 'brm/questionnaire/valid_acc_ht16',
+      file_refit = "on_change",
+      data = .)
+
+brm_valid_rt_ht16 = df_valid %>% 
+  filter(phase == 2,
+         trial <= 16,
+         correct) %>% 
+  mutate(trial = log2(trial),
+         duration = log2(duration)) %>% 
+  brm(duration ~ valid*house_type + trial + (1 | subject_id),
+      iter = 8000,
+      cores = 4,
+      seed = 0,
+      file = 'brm/questionnaire/valid_rt_ht16',
+      file_refit = "on_change",
+      data = .)
+```
+
+```{r}
+brm_valid_acc_ht %>% 
+  tidy() %>% 
+  filter(effect == 'fixed') %>% 
+  select(term, estimate, std.error, conf.low, conf.high) %>% 
+  mutate(across(is.numeric, ~round(.x, 3)))
+
+brm_valid_rt_ht %>% 
+  tidy() %>% 
+  filter(effect == 'fixed') %>% 
+  select(term, estimate, std.error, conf.low, conf.high) %>% 
+  mutate(across(is.numeric, ~round(.x, 3)))
+```
+
+### Plot accuracy
+
+```{r}
+df_model = df_valid %>% 
+  filter(phase == 2) %>% 
+  mutate(trial = log2(trial)) %>% 
+  data_grid(valid, house_type, trial, subject_id) %>% 
+  add_predicted_draws(brm_valid_acc_ht) %>% 
+  group_by(valid, house_type, trial, .draw) %>% 
+  summarize(accuracy = mean(.prediction)) %>% 
+  group_by(valid, house_type, trial) %>% 
+  summarize(mean = mean(accuracy),
+            low2 = quantile(accuracy, .025),
+            low1 = quantile(accuracy, .16),
+            high1 = quantile(accuracy, .84),
+            high2 = quantile(accuracy, .975)) %>% 
+  mutate(house_type = ifelse(house_type, 'Changed', 'Unchanged') %>% 
+           factor(c('Unchanged', 'Changed')))
+```
+
+```{r}
+df_valid %>% 
+  mutate(correct = as.numeric(correct),
+         house_type = ifelse(house_type, 'Changed', 'Unchanged') %>% 
+           factor(c('Unchanged', 'Changed')),
+         trial = log2(trial)) %>% 
+  ggplot(aes(x = trial)) +
+  facet_wrap(~valid) +
+  stat_summary(aes(y = correct, color = house_type),
+               fun = 'mean',
+               geom = 'point',
+               alpha = .5,
+               shape = 20,
+               size = 1.6) +
+  geom_ribbon(aes(ymin = low2, ymax = high2, fill = house_type), 
+              data = df_model,
+              alpha = .3) +
+  geom_line(aes(y = mean, color = house_type),
+            data = df_model) +
+  scale_x_continuous(breaks = 0:6,
+                     labels = 2^(0:6),
+                     minor_breaks = log2(1.5 * 2^(1:5))) +
+  scale_y_continuous(labels = percent) +
+  scale_color_hue(direction = -1) +
+  scale_fill_hue(direction = -1) +
+  labs(x = 'Trial',
+       y = 'Accuracy') +
+  theme(legend.title = element_blank(),
+        legend.position = 'bottom')
+ggsave("../figures/questionnaire/solvers_ht_accuracy.png",
+       width = 8, height = 4)
+```
+
+### Plot RT
+```{r}
+df_model = df_valid %>% 
+  filter(phase == 2,
+         correct) %>% 
+  mutate(trial = log2(trial)) %>% 
+  data_grid(valid, house_type, trial, subject_id) %>% 
+  add_predicted_draws(brm_valid_rt_ht, ndraws=500) %>% 
+  group_by(valid, house_type, trial, .draw) %>% 
+  summarize(accuracy = mean(.prediction)) %>% 
+  group_by(valid, house_type, trial) %>% 
+  summarize(mean = mean(accuracy),
+            low2 = quantile(accuracy, .025),
+            low1 = quantile(accuracy, .16),
+            high1 = quantile(accuracy, .84),
+            high2 = quantile(accuracy, .975)) %>% 
+  mutate(house_type = ifelse(house_type, 'Changed', 'Unchanged') %>% 
+           factor(c('Unchanged', 'Changed')))
+```
+
+
+
+
+
+```{r}
+df_valid %>% 
+  mutate(duration = log2(duration),
+         house_type = ifelse(house_type, 'Changed', 'Unchanged') %>% 
+           factor(c('Unchanged', 'Changed')),
+         trial = log2(trial)) %>% 
+  ggplot(aes(x = trial)) +
+  facet_wrap(~valid, scales = 'free') +
+  stat_summary(aes(y = duration, color = house_type),
+               fun = 'mean',
+               geom = 'point',
+               alpha = .5,
+               shape = 20,
+               size = 1.6) +
+  geom_ribbon(aes(ymin = low2, ymax = high2, fill = house_type), 
+              data = df_model,
+              alpha = .3) +
+  geom_line(aes(y = mean, color = house_type),
+            data = df_model) +
+  scale_x_continuous(breaks = 0:6,
+                     labels = 2^(0:6),
+                     minor_breaks = log2(1.5 * 2^(1:5))) +
+  scale_y_continuous(breaks = log2(seq(10, 60, 10)),
+                     labels = seq(10, 60, 10),
+                     minor_breaks = log2(seq(5, 60, 5))) +
+  scale_color_hue(direction = -1) +
+  scale_fill_hue(direction = -1) +
+  labs(x = 'Trial',
+       y = 'Response Time (seconds)') +
+  theme(legend.title = element_blank(),
+        legend.position = 'bottom')
+ggsave("../figures/questionnaire/solvers_ht_rt.png",
+       width = 8, height = 4)
+```
+
+# General numbers
+
+```{r}
+df_data %>% 
+  filter(!excluded) %>% 
+  select(subject_id, solver, p1_accuracy, p2_accuracy, q_strategy, basis) %>% 
+  filter(solver == 'Persistent Solver',
+         str_sub(as.character(basis), 1, 1) != 'V') %>% 
+  mutate(q_strategy = str_replace_all(q_strategy, '\n', '__')) %>% 
+  write_tsv("../temp/x.tsv")
+```
+
+
+### Math education
+```{r}
+df_subjects %>% 
+  filter(!excluded) %>% 
+  mutate(group = ifelse(solver, 'solver', 'nonsolver'),
+         math = case_when(m_alg & m_geom ~ 'both',
+                          m_alg ~ 'algebra',
+                          m_geom ~ 'geometry',
+                          T ~ 'neither')) %>% 
+  group_by(group, math) %>% 
+  summarize(n = n()) %>% 
+  mutate(proportion = round(n / sum(n), 3))
+pivot_longer(starts_with('m_'),
+             names_to = 'math',
+             values_to = 'math_taken',
+             names_prefix = 'm_') %>% 
+  select(subject_id, solver, math, math_taken) %>% 
+  group_by(solver, math) %>% 
+  summarize(proportion = mean(math_taken)) %>% 
+  ungroup() %>% 
+  mutate(group = ifelse(solver, 'solver', 'nonsolver'),
+         proportion = 100 * round(proportion, 3)) %>% 
+  select(-solver) %>% 
+  pivot_wider(names_from = group, values_from = proportion)
+```
+
+
+# Forced-response questions
+
+```{r wrangle_mc, echo=F}
+df.attn = df_data %>% 
+  select(subject_id, solver, q_attn_check1, q_attn_check2, q_attn_check3) %>% 
+  distinct() %>% 
+  mutate(q_attn_check3 = 1 - q_attn_check3) %>% 
+  pivot_longer(c(q_attn_check1, q_attn_check2, q_attn_check3),
+               names_to = "temp",
+               values_to = "value") %>% 
+  select(-temp) %>% 
+  mutate(measure = "Attention Check",
+         value = as.numeric(value))
+
+df.questions_long = df_data %>% 
+  select(subject_id,
+         solver,
+         q_puzzle,
+         q_confidence,
+         q_digit_selection,
+         q_digit_check,
+         q_check_strategy_select) %>% 
+  distinct() %>%  
+  mutate(q_puzzle = q_puzzle == 'target',
+         q_digit_selection = str_sub(q_digit_selection, 0, 3) == 'I n',
+         q_digit_check = str_sub(q_digit_check, 0, 3) == 'Yes',
+         q_check_strategy_select = str_sub(q_check_strategy_select, 0, 3) != 'I l',
+         solved = q_puzzle == 'target',
+         q_confidence = q_confidence / 100) %>% 
+  pivot_longer(-c(subject_id, solver),
+               names_to = "measure",
+               values_to = "value") %>% 
+  bind_rows(df.attn) %>% 
+  mutate(measure = recode(measure,
+                          q_puzzle = "Solved\nPuzzle",
+                          q_confidence = "Puzzle\nConfidence",
+                          q_digit_selection = "Noticed",
+                          q_digit_check = "Checked\nCandidate",
+                          q_check_strategy_select = "Checked\nHouse"),
+         measure = factor(measure,
+                          levels = c("Attention\nCheck",
+                                     "Solved\nPuzzle",
+                                     "Puzzle\nConfidence",
+                                     "Noticed",
+                                     "Checked\nCandidate",
+                                     "Checked\nHouse"))) %>% 
+  drop_na()
+```
+
+Forced-response summary statistics
+
+```{r mc_stats}
+set.seed(0)
+
+df.sum.stats = df.questions_long %>% 
+  group_by(measure, solver) %>% 
+  summarize(n = n(),
+            mean = mean(value)) %>% 
+  left_join(get_beta_hdci(df.questions_long,
+                          value,
+                          100000,
+                          c('solver', 'measure'),
+                          seed=0)) %>% 
+  mutate(across(where(is.numeric), ~round(., 4)))
+```
+
+## Difference in means
+```{r}
+set.seed(0)
+
+binom_prop_diff = function(df, counts, total) {
+  # counts and total must be integer columns
+  counts = pull(df, !!enquo(counts))
+  total = pull(df, !!enquo(total))
+  means = counts / total
+  means = c(means, means[1] - means[2])
+  results = bayes.prop.test(counts, total)
+  results$stats %>% 
+    as.tibble(rownames='term') %>% 
+    mutate(term = case_when(term == 'theta[1]' ~ 'group1',
+                            term == 'theta[2]' ~ 'group2',
+                            term == 'theta_diff[1,2]' ~ 'diff')) %>%
+    filter(term %in% c('group1', 'group2', 'diff')) %>% 
+    mutate(mean = means) %>% 
+    select(term, mean, hdci_l = HDIlo, hdci_u = HDIup)
+}
+
+df.sum.stats %>% 
+  mutate(alpha = as.integer(alpha)) %>% 
+  group_by(measure) %>% 
+  nest() %>% 
+  mutate(results = map(data, ~binom_prop_diff(., alpha, n))) %>%
+  select(-data) %>% 
+  unnest() %>% 
+  mutate(across(where(is.numeric), ~round(100*., 2)))
+```
+
+## Plot
+
+```{r mc_bar, echo=F}
+# Forced-response bar plot
+ggplot() +
+  stat_summary(aes(x = measure, y = value, fill = solver),
+               data = df.questions_long,
+               fun = "mean",
+               geom = "bar",
+               position = position_dodge2()) +
+  geom_linerange(aes(x = measure,
+                     ymin = hdci_l,
+                     ymax = hdci_h,
+                     group = solver),
+                 data = df.sum.stats,
+                 position = position_dodge2(.9)) +
+  geom_text(aes(x = measure, y = -.06, label = n, group = solver),
+            data = df.sum.stats,
+            vjust=0,
+            position = position_dodge(width = .9)) +
+  labs(x = "Question",
+       y = "Response") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom") +
+  ggsave(glue("../figures/questionnaire/q_mc.png"), width=6, height=4)
+```
+
+# Free-response questions
+
+## Agreement plot
+
+### Superclass
+```{r}
+df_qratings %>% 
+  mutate(solver = ifelse(solver, 'Solver', 'Non-Solver') %>% 
+           factor(c('Solver', 'Non-Solver'))) %>% 
+  select(subject_id, solver, basis) %>% 
+  arrange(subject_id, solver, basis) %>% 
+  group_by(subject_id) %>% 
+  mutate(rating = c('r1', 'r2')) %>% 
+  ungroup() %>% 
+  pivot_wider(names_from = rating, values_from = basis) %>% 
+  group_by(solver, r1, r2) %>% 
+  summarize(n = n()) %>% 
+  ungroup() %>% 
+  complete(solver, r1, r2, fill = list(n = 0)) %>% 
+  mutate(label = ifelse(n > 0, as.character(n), "")) %>% 
+  ggplot(aes(x = r1, y = fct_rev(r2), fill = n)) +
+  facet_wrap(~solver) +
+  geom_tile() +
+  scale_fill_gradient(low = 'white',
+                      high = 'steelblue',
+                      na.value = 'white') +
+  geom_text(aes(label = label)) +
+  scale_x_discrete(position = "top") + 
+  theme(legend.position = "bottom",
+        text = element_text(size = 15)) +
+  scale_x_discrete(position = "bottom") +
+  labs(x = element_blank(),
+       y = element_blank()) +
+  theme(legend.position = 'none') +
+  coord_fixed()
+
+ggsave("../figures/questionnaire/agreement_basis.png", width=6, height=4)
+```
+
+### Subclass
+```{r}
+df_qratings %>% 
+  mutate(solver = ifelse(solver, 'Solver', 'Non-Solver') %>% 
+           factor(c('Solver', 'Non-Solver'))) %>% 
+  select(subject_id, solver, sub_basis) %>% 
+  arrange(subject_id, solver, sub_basis) %>% 
+  group_by(subject_id) %>% 
+  mutate(rating = c('r1', 'r2')) %>% 
+  ungroup() %>% 
+  pivot_wider(names_from = rating, values_from = sub_basis) %>% 
+  group_by(solver, r1, r2) %>% 
+  summarize(n = n()) %>% 
+  ungroup() %>% 
+  complete(solver, r1, r2, fill = list(n = 0)) %>% 
+  mutate(label = ifelse(n > 0, as.character(n), "")) %>% 
+  ggplot(aes(x = r1, y = fct_rev(r2), fill = n)) +
+  facet_wrap(~solver) +
+  geom_tile() +
+  scale_fill_gradient(low = 'white',
+                      high = 'steelblue',
+                      na.value = 'white') +
+  geom_text(aes(label = label)) +
+  scale_x_discrete(position = "top") + 
+  theme(legend.position = "bottom",
+        text = element_text(size = 15)) +
+  scale_x_discrete(position = "bottom") +
+  labs(x = element_blank(),
+       y = element_blank()) +
+  theme(legend.position = 'none') +
+  coord_fixed()
+
+ggsave("../figures/questionnaire/agreement_subbasis.png", width=6, height=4)
+```
+
+## Basis Plot
+
+### Superclasses
+```{r}
+df_data %>% 
+  filter(correct_actual) %>%
+  select(subject_id, rater, solver, basis) %>% 
+  mutate(basis = str_sub(basis, 1, 1),
+         basis = case_when(basis == 'V' ~ 'Valid',
+                           basis == 'U' ~ 'Unclear',
+                           basis == 'I' ~ 'Invalid',
+                           T ~ 'Missing') %>% 
+           factor(c('Valid', 'Unclear', 'Invalid', 'Missing')),
+         y = 1) %>% 
+  group_by(solver) %>% 
+  complete(subject_id, rater,  basis) %>%
+  ungroup() %>% 
+  replace_na(list(y = 0)) %>% 
+  ggplot(aes(x = basis, y = y, fill = solver)) +
+  stat_summary(geom = 'bar',
+               fun = 'mean',
+               position = position_dodge(.9)) +
+  stat_summary(geom = 'linerange',
+               fun.data = 'mean_cl_boot',
+               position = position_dodge(.9)) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = 'Basis', y = '% of Participants in Group') +
+  guides(fill = guide_legend(title = '')) +
+  theme(legend.position = 'bottom',
+        panel.grid.major.x = element_blank())
+ggsave("../figures/questionnaire/bases.png", height = 4, width = 6)
+```
+
+### Subclasses
+```{r}
+df_data %>% 
+  filter(correct_actual) %>%
+  select(subject_id, rater, solver, basis) %>% 
+  mutate(y = 1) %>% 
+  group_by(solver) %>% 
+  complete(subject_id, rater,  basis) %>%
+  ungroup() %>% 
+  replace_na(list(y = 0)) %>% 
+  ggplot(aes(x = basis, y = y, fill = solver, group = solver)) +
+  stat_summary(geom = 'bar',
+               fun = 'mean',
+               position = position_dodge(.9)) +
+  stat_summary(geom = 'linerange',
+               fun.data = 'mean_cl_boot',
+               position = position_dodge(.9)) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = 'Basis', y = '% of Participants in Group') +
+  guides(fill = guide_legend(title = '')) +
+  theme(legend.position = 'bottom',
+        panel.grid.major.x = element_blank())
+ggsave("../figures/questionnaire/subbases.png", height = 4, width = 6)
+```
+
+## BELOW IS OLD
+
+## Did the raters correctly judge the correctness of subjects' responses?
+```{r rater_correct}
+df_data %>% 
+  mutate(correct_acc = correct_eval == correct_actual) %>% 
+  group_by(rater) %>% 
+  summarize(correct_acc = mean(correct_acc)) %>% 
+  knitr::kable()
+```
+
+## Did the raters agree on their decisions?
+
+### PD
+
+```{r pd_agree}
+df_data %>% 
+  select(subject_id, rater, pd) %>% 
+  pivot_wider(names_from = rater, values_from = pd) %>% 
+  mutate(agree = rater1 == rater2) %>% 
+  summarize(agree = mean(agree)) %>% 
+  knitr::kable()
+```
+
+```{r pd_tile, echo=F}
+# PD Agreement plot
+
+df_data %>% 
+  select(subject_id, rater, pd) %>% 
+  pivot_wider(names_from = rater, values_from = pd) %>% 
+  group_by(rater1, rater2) %>% 
+  summarize(n = n()) %>% 
+  complete(rater1, rater2, fill = list(n = 0)) %>% 
+  mutate(label = ifelse(n > 0, as.character(n), "")) %>% 
+  ggplot(aes(x = rater1, y = fct_rev(rater2), fill = n)) +
+  geom_tile() +
+  scale_fill_gradient(low = 'white',
+                      high = 'steelblue',
+                      na.value = 'white') +
+  geom_text(aes(label = label)) +
+  scale_x_discrete(position = "top") + 
+  theme(legend.position = "bottom",
+        text = element_text(size = 15)) +
+  labs(title = 'Prevalent Digit Classifications',
+       x = 'Rater 1',
+       y = 'Rater 2') +
+  guides(fill = guide_colorbar(title = "Number of Subjects")) + 
+  ggsave(glue("../figures/questionnaire/q_pd.png"), width=6, height=4)
+```
+
+### Awareness of Error
+```{r aoe_agree}
+df_data %>% 
+  select(subject_id, rater, aoe) %>% 
+  drop_na(aoe) %>% 
+  pivot_wider(names_from = rater, values_from = aoe) %>% 
+  mutate(agree = rater1 == rater2) %>% 
+  summarize(agree = mean(agree)) %>% 
+  knitr::kable()
+```
+
+### Basis for Choice
+
+First choice only
+```{r}
+df_data %>% 
+  select(subject_id, rater, basis) %>% 
+  mutate(basis = as.character(basis)) %>% 
+  pivot_wider(names_from = rater,
+              values_from = basis,
+              names_glue = "{rater}_{.value}") %>% 
+  mutate(agree = rater1_basis == rater2_basis) %>% 
+  select(subject_id, agree, everything()) %>% 
+  summarize(agree = mean(agree)) %>% 
+  knitr::kable()
+```
+
+
+First choice only for those that solved correctly at valid vs invalid
+```{r}
+df_data %>% 
+  filter(correct_actual) %>% 
+  #        solver == 'Persistent Solver') %>% 
+  select(subject_id, rater, basis) %>% 
+  # mutate(basis = as.character(basis)) %>%
+  mutate(basis = as.character(basis) %>%
+           substring(0, 1)) %>%
+  pivot_wider(names_from = rater,
+              values_from = basis,
+              names_glue = "{rater}_{.value}") %>% 
+  mutate(agree = rater1_basis == rater2_basis) %>% 
+  select(subject_id, agree, everything()) %>% 
+  summarize(agree = mean(agree)) %>% 
+  knitr::kable()
+```
+
+Rule: Either both first bases match or a first basis match with second basis.
+Since our focus on this analysis is just first basis, if only second bases match,
+we should just count them as disagreements.
+
+```{r basis_agree}
+df_data %>% 
+  select(subject_id, rater, basis, basis2) %>% 
+  mutate(across(c(basis, basis2),
+                .fns = as.character)) %>% 
+  pivot_wider(names_from = rater,
+              values_from = c('basis', 'basis2'),
+              names_glue = "{rater}_{.value}") %>% 
+  mutate(agree = rater1_basis == rater2_basis | 
+           rater1_basis == rater2_basis2 |
+           rater1_basis2 == rater2_basis) %>% 
+  select(subject_id, agree, everything()) %>% 
+  summarize(agree = mean(agree)) %>% 
+  knitr::kable()
+```
+
+
+```{r basis_tile, echo=F}
+# Visualizing only first bases.
+
+df_data %>% 
+  select(subject_id, solver, rater, basis) %>% 
+  pivot_wider(names_from = rater, values_from = basis) %>% 
+  group_by(rater1, rater2, solver) %>% 
+  summarize(n = n()) %>% 
+  complete(rater1, rater2, fill = list(n = 0)) %>% 
+  mutate(label = ifelse(n > 0, as.character(n), "")) %>% 
+  drop_na(solver) %>% 
+  ggplot(aes(x = rater1, y = fct_rev(rater2), fill = n)) +
+  geom_tile() +
+  scale_fill_gradient(low = 'white',
+                      high = 'steelblue',
+                      na.value = 'white') +
+  geom_text(aes(label = label)) +
+  scale_x_discrete(position = "top") + 
+  facet_wrap(vars(solver)) +
+  theme(legend.position = "bottom",
+        text = element_text(size = 15)) +
+  labs(title = 'Basis for Choice Classifications',
+       x = 'Rater 1',
+       y = 'Rater 2') +
+  guides(fill = guide_colorbar(title = "Number of Subjects")) +
+  ggsave(glue("../figures/questionnaire/q_basis.png"), width=6, height=4)
+```
+
+```{r basis_tile, echo=F}
+# Visualizing only first bases.
+# Correct responders only
+
+df_data %>% 
+  filter(correct_actual) %>% 
+  select(subject_id, solver, rater, basis) %>% 
+  pivot_wider(names_from = rater, values_from = basis) %>% 
+  group_by(rater1, rater2, solver) %>% 
+  summarize(n = n()) %>% 
+  complete(rater1, rater2, fill = list(n = 0)) %>% 
+  mutate(label = ifelse(n > 0, as.character(n), "")) %>% 
+  drop_na(solver) %>% 
+  ggplot(aes(x = rater1, y = fct_rev(rater2), fill = n)) +
+  geom_tile() +
+  scale_fill_gradient(low = 'white',
+                      high = 'steelblue',
+                      na.value = 'white') +
+  geom_text(aes(label = label)) +
+  scale_x_discrete(position = "top") + 
+  facet_wrap(vars(solver)) +
+  theme(legend.position = "bottom",
+        text = element_text(size = 15)) +
+  labs(title = 'Basis for Choice Classifications (Correct Only)',
+       x = 'Rater 1',
+       y = 'Rater 2') +
+  guides(fill = guide_colorbar(title = "Number of Subjects")) +
+  ggsave(glue("../figures/questionnaire/q_basis_correct.png"), width=6, height=4)
+```
+
+## Basis for Choice Group Differences
+
+Difference in valid_basis distribution
+```{r basis_tests, warning=F}
+df_data %>% 
+  filter(correct_actual) %>% 
+  get_counts_with_zeros(c('solver', 'valid_basis')) %>% 
+  spread(valid_basis, n) %>% 
+  select(-solver) %>% 
+  chisq.test()
+```
+
+All 9 classifications
+
+```{r}
+df_data %>% 
+  filter(correct_actual) %>% 
+  get_counts_with_zeros(c('solver', 'basis')) %>% 
+  spread(basis, n) %>% 
+  select(-c(solver, X)) %>% 
+  chisq.test()
+```
+
+
+
+
+
+# Education
+```{r edu_wrangle, echo=F, message=F}
+df.edu = df.subject_data %>% 
+  mutate(edu_level = factor(education,
+                            levels = c('no_hs',
+                                       'hs',
+                                       'asso',
+                                       'bach',
+                                       'mast',
+                                       'prof',
+                                       'phd'),
+                            labels = c('HS\nIncomplete',
+                                       'High\nSchool',
+                                       "Associate's",
+                                       "Bachelor's",
+                                       "Master's",
+                                       'Professional',
+                                       'Doctoral')),
+         education = recode(education,
+                            phd = 21,
+                            prof = 20,
+                            mast = 18,
+                            bach = 16,
+                            asso = 14,
+                            hs = 12,
+                            no_hs = 10)) %>% 
+  select(subject_id, sid_hash, solver,
+         education, edu_level, starts_with('m_')) %>% 
+  rename_with(~str_sub(., start=3), starts_with('m_')) %>% 
+  mutate(across(where(is_logical), as.numeric),
+         in_qrate = sid_hash %in% df.qratings1$sid_hash,
+         alg_geom = case_when(alg + geom == 2 ~ 'Both',
+                              alg + geom == 1 ~ 'One',
+                              alg + geom == 0 ~ 'Neither'),
+         alg_geom = factor(alg_geom,
+                           levels = c("Both", "One", "Neither")))
+
+df.edu = df.results %>% 
+  group_by(subject_id) %>% 
+  summarize(n_solved = sum(correct),
+            accuracy = mean(correct)) %>% 
+  left_join(df.edu)
+```
+
+
+```{r}
+model = brm(accuracy ~ 0 + alg_geom:edu_level,
+            data = df.edu,
+            prior = c(set_prior("uniform(0,1)", lb = 0, ub = 1)),
+            save_pars = save_pars(all=TRUE),
+            seed = 0,
+            iter = 4000,
+            cores = 4,
+            refresh = 0,
+            file = 'cache/edu.plot')
+
+df.sum.stats = model %>% 
+  tidy() %>% 
+  select(term, estimate, conf.low, conf.high) %>% 
+  mutate(alg_geom = map_chr(term, ~ str_match(., "alg\\_geom*(.*?):edu\\_level")[,2]),
+         edu_level = map_chr(term, ~ sub('.*edu_level', '', .) %>% 
+                               gsub("([A-Z])", " \\1", .) %>% 
+                               substr(., 2, 1000))) %>% 
+  select(alg_geom, edu_level, estimate, hdci_l = conf.low, hdci_h = conf.high) %>% 
+  mutate(edu_level = case_when(edu_level == 'H S Incomplete' ~ 'HS\nIncomplete',
+                               edu_level == 'High School' ~ 'High\nSchool',
+                               edu_level == 'Associates' ~ "Associate's",
+                               edu_level == 'Bachelors' ~ "Bachelor's",
+                               edu_level == 'Masters' ~ "Master's",
+                               TRUE ~ edu_level),
+         alg_geom = factor(alg_geom, levels(df.edu$alg_geom)))
+
+df.sum.stats = df.edu %>% 
+  get_counts_with_zeros(c('edu_level', 'alg_geom')) %>% 
+  inner_join(df.sum.stats) %>% 
+  mutate(hdci_h = case_when(n < 2 ~ hdci_l,
+                            TRUE ~ hdci_h)) %>% 
+  filter(n > 0)
+
+
+colors = hue_pal()(3)
+
+df.edu %>% 
+  ggplot(aes(x = edu_level,
+             color = alg_geom,
+             fill = alg_geom)) +
+  geom_point(aes(y = accuracy),
+             position = position_jitterdodge(dodge.width = .3,
+                                             jitter.width = .3),
+             alpha = .5) +
+  geom_linerange(aes(ymin = hdci_l,
+                     ymax = hdci_h),
+                 data = df.sum.stats,
+                 size = .75,
+                 position = position_dodge2(.3)) +
+  stat_summary(aes(y = accuracy),
+               fun = "mean",
+               geom = "point",
+               size = 2,
+               shape = 21,
+               color = 'black',
+               position = position_dodge2(.3)) +
+  scale_color_manual(values = c(colors[2], 'gold', colors[1])) +
+  scale_fill_manual(values = c(colors[2], 'gold', colors[1])) +
+  labs(x = "Education",
+       y = "Accuracy",
+       color = "Algebra & Geometry",
+       fill = "Algebra & Geometry") +
+  theme(legend.position = "bottom",
+        text = element_text(size = 15)) +
+  ggsave(glue("../figures/questionnaire/education.png"), width=7, height=5)
+```
+
+## Regressions
+
+### Education
+```{r fit_edu}
+lm.edu = brm(n_solved ~ education,
+             data = df.edu,
+             save_pars = save_pars(all=TRUE),
+             seed = 0,
+             cores = 4,
+             refresh = 0,
+             file = 'cache/education/edu')
+
+lm.edu %>%
+  summary() %>% 
+  print(digits = 3)
+
+bayes_R2(lm.edu)
+```
+
+### Math
+```{r fit_math}
+lm.math = brm(n_solved ~ alg + geom + trig + sv_calc +
+                mv_calc + linalg + pr_stat + disc + logic,
+              data = df.edu,
+              save_pars = save_pars(all=TRUE),
+              seed = 0,
+              cores = 4,
+              refresh = 0,
+              file = 'cache/education/math')
+
+lm.math %>%
+  summary() %>% 
+  print(digits = 3)
+
+bayes_R2(lm.math)
+```
+
+### Algebra and Geometry
+```{r fit_ag}
+lm.ag = brm(n_solved ~ alg + geom,
+            data = df.edu,
+            save_pars = save_pars(all=TRUE),
+            seed = 0,
+            cores = 4,
+            refresh = 0,
+            file = 'cache/education/ag')
+
+lm.ag %>%
+  summary() %>% 
+  print(digits = 3)
+
+bayes_R2(lm.ag)
+```
+
+### Education, algebra, and geometry
+```{r fit_eag}
+lm.eag = brm(n_solved ~ education + alg + geom,
+             data = df.edu,
+             save_pars = save_pars(all=TRUE),
+             seed = 0,
+             cores = 4,
+             refresh = 0,
+             file = 'cache/education/eag')
+
+lm.eag %>%
+  summary() %>% 
+  print(digits = 3)
+
+bayes_R2(lm.eag)
+```
+
+### Education and math
+```{r fit_all}
+lm.all = brm(n_solved ~ education + alg + geom + trig + sv_calc +
+               mv_calc + linalg + pr_stat + disc + logic,
+             data = df.edu,
+             save_pars = save_pars(all=TRUE),
+             seed = 0,
+             cores = 4,
+             refresh = 0,
+             file = 'cache/education/all')
+
+lm.all %>%
+  summary()
+
+bayes_R2(lm.all)
+```
+
+### Compare models
+
+Education does not substantially improve the models when all the math courses are
+accounted for. It is more substantial (moderately strong evidence) when only considering
+algebra and geometry.
+```{r}
+bayes_factor(lm.all, lm.math, silent=T)
+bayes_factor(lm.eag, lm.ag, silent=T)
+```
+
+Conversely, considering algebra and geometry is extremely helpful compared to just
+years of education.
+
+```{r}
+bayes_factor(lm.eag, lm.edu, silent=T)
+```
+
+The BF shows extremely high favor towards including other math courses. It certainly
+adds predictive power collectively, but the significance of individual terms is unclear.
+```{r}
+bayes_factor(lm.all, lm.eag, silent=T)
+bayes_factor(lm.math, lm.ag, silent=T)
+```
+
+
+
+## Compare distributions of alg_geom
+
+```{r ag_dist}
+df.edu %>% 
+  filter(sid_hash %in% df.qratings$sid_hash) %>% 
+  get_counts_with_zeros(c('solver', 'alg_geom')) %>% 
+  pivot_wider(names_from = alg_geom,
+              values_from = n) %>% 
+  select(solver, Both, One, Neither) %>% 
+  replace_na(list(Neither = 0)) %>% 
+  select(-solver) %>% 
+  chisq.test()
+```
